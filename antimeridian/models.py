@@ -157,3 +157,44 @@ class UnfoldedLoop:
     ambiguous_markers: tuple[AmbiguousMarker, ...]
     signed_area: float
     area_winding: str
+
+
+@dataclass(frozen=True)
+class ClippedLoop:
+    """Result of :func:`antimeridian.core.clip_loop_to_hemisphere`.
+
+    The intersection of one convex, hole-free spherical loop with the closed
+    hemisphere centred on ``pole`` (the set of points within 90 degrees of
+    it; the bounding great circle itself counts as inside).
+
+    Attributes
+    ----------
+    status:
+        ``"full"``    -- the whole input loop lies in the hemisphere; the
+                         returned ring is the input ring, unchanged;
+        ``"partial"`` -- a proper subset; the ring mixes original vertices
+                         with crossing points on the clipping great circle;
+        ``"empty"``   -- no area in common (a touch along an edge or at a
+                         vertex has zero area and counts as empty).
+    points:
+        Clipped ring vertices as :class:`GeoPoint` (radians, canonical
+        ranges), in the input loop's orientation; empty tuple when
+        ``status == "empty"``.  Edges are the unique short great-circle arcs
+        between consecutive vertices (implicitly closed).
+    area:
+        Non-negative area of the intersection in steradians, ``[0, 2*pi)``.
+    signed_area:
+        Signed area following the input loop's orientation (positive when
+        the input loop is counter-clockwise); ``0.0`` when empty.
+    winding:
+        ``"ccw"`` / ``"cw"`` -- orientation of the input loop.
+    pole:
+        The hemisphere pole actually used (validated, canonicalized).
+    """
+
+    status: str
+    points: tuple[GeoPoint, ...]
+    area: float
+    signed_area: float
+    winding: str
+    pole: GeoPoint

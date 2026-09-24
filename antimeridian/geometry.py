@@ -284,6 +284,38 @@ def interior_pole(p, q, alpha: float):
     return None
 
 
+# --------------------------------------------------------------------------- #
+# Hemisphere clipping support
+# --------------------------------------------------------------------------- #
+def arc_boundary_crossing(p, q, alpha: float, pole):
+    """Closed-form crossing of short arc p->q with a clipping great circle.
+
+    The clipping great circle is the horizon of the hemisphere centred on
+    the unit vector ``pole``: the set ``{x : x.pole == 0}``.  The arc's own
+    great-circle plane (normal ``p x q``) meets that plane in a line through
+    the origin, giving two antipodal candidates; the one lying on the
+    *short* arc is selected via the SLERP basis (never by lon/lat
+    interpolation).
+
+    Returns ``(t, x)`` with the arc parameter ``t`` in ``[0, 1]`` and the
+    unit crossing point ``x``, or ``None`` when the arc's great circle is
+    (numerically) parallel to the horizon or no crossing lies on the arc.
+    A short arc (central angle < pi) meets the horizon at most once: the two
+    candidate points are antipodal and cannot both fit on an arc shorter
+    than pi.
+    """
+    axis = cross(cross(p, q), pole)
+    if norm(axis) < 1e-13:
+        return None  # arc great circle parallel to the horizon
+    x = normalize(axis)
+    for cand in (x, (-x[0], -x[1], -x[2])):
+        t = arc_parameter(p, q, alpha, cand)
+        if t is not None and -T_EPS <= t <= 1.0 + T_EPS:
+            tt = min(1.0, max(0.0, t))
+            return tt, slerp(p, q, alpha, tt)
+    return None
+
+
 def on_seam_meridian(v) -> bool:
     """True if unit point v lies on the physical 180 half-meridian.
 

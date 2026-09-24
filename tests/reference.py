@@ -155,3 +155,27 @@ def reference_edge_passes_pole(p, q, alpha):
                 < alpha - 1e-9:
             out.append(name)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Independent point-in-loop test for CONVEX loops: all-edge-normals test
+# --------------------------------------------------------------------------- #
+def reference_contains(points_rad, lon, lat):
+    """True iff (lon, lat) lies inside the convex loop.
+
+    Independent of the core's Sutherland-Hodgman walk: a convex loop is the
+    intersection of the hemispheres left of every edge, so a point is inside
+    iff it lies on the same side of *every* edge great circle.  The loop's
+    orientation is taken from the independent Van Oosterom signed area.
+    Boundary counts as inside.  (A tangent-plane winding sum was considered
+    and rejected: it cannot distinguish a region from its antipodal image.)
+    """
+    x = to_xyz(lon, lat)
+    vs = [to_xyz(lo, la) for lo, la in points_rad]
+    orient = 1.0 if reference_signed_area(points_rad) > 0.0 else -1.0
+    n = len(vs)
+    for i in range(n):
+        edge_normal = cross(vs[i], vs[(i + 1) % n])
+        if orient * dot(x, edge_normal) < -1e-9:
+            return False
+    return True

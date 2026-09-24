@@ -22,7 +22,9 @@ from __future__ import annotations
 import math
 
 from antimeridian import (
+    NonConvexLoopError,
     SelfIntersectionError,
+    clip_loop_to_hemisphere,
     unfold_loop,
 )
 from antimeridian.geometry import lonlat_to_xyz
@@ -137,6 +139,51 @@ def main() -> None:
         print(f"locator: {exc.location}; edge pair: {exc.edge_indices}")
     else:  # pragma: no cover - defensive, must not happen
         raise AssertionError("self-intersecting loop was not rejected")
+
+    # ------------------------------------------------------------------ #
+    # 4. Hemisphere clipping of a convex loop.
+    # ------------------------------------------------------------------ #
+    section("4. Convex loop intersected with a great-circle hemisphere")
+    cap_deg = [(0.0, 80.0), (120.0, 80.0), (-120.0, 80.0)]
+    cap = [(lo * D, la * D) for lo, la in cap_deg]
+    cap_area = unfold_loop(cap).signed_area
+    print(f"polar cap vertices (lon,lat) deg: {cap_deg}")
+    print(f"cap area (unsigned)      = {abs(cap_area):.9f} rad^2")
+
+    pole_deg = (10.0, 0.0)
+    pole = (pole_deg[0] * D, pole_deg[1] * D)
+    res = clip_loop_to_hemisphere(cap, pole)
+    print(f"\nclip by hemisphere centred on {pole_deg} (status={res.status}):")
+    for i, p in enumerate(res.points):
+        print(f"  vertex {i}: lon {p.lon / D:9.4f} deg, lat {p.lat / D:8.4f} deg")
+    print(f"  clipped area           = {res.area:.9f} rad^2 "
+          f"(signed {res.signed_area:+.9f}, {res.winding})")
+
+    anti = clip_loop_to_hemisphere(cap, (pole[0] - math.pi, -pole[1]))
+    print(f"opposite hemisphere area = {anti.area:.9f} rad^2 "
+          f"(status={anti.status})")
+    print(f"partition identity: {res.area:.9f} + {anti.area:.9f} "
+          f"= {res.area + anti.area:.9f} (cap area {abs(cap_area):.9f}, "
+          f"diff {abs(res.area + anti.area - abs(cap_area)):.2e})")
+
+    full = clip_loop_to_hemisphere(cap, (0.0, math.pi / 2))
+    print(f"\nclip by northern hemisphere: status={full.status}, "
+          f"area={full.area:.9f} (whole cap kept)")
+    empty = clip_loop_to_hemisphere(cap, (0.0, -math.pi / 2))
+    print(f"clip by southern hemisphere: status={empty.status}, "
+          f"area={empty.area:.1f} (whole cap excluded)")
+
+    print("\nnon-convex (arrow) loop must be refused:")
+    arrow = [(lo * D, la * D) for lo, la in
+             [(0.0, 0.0), (40.0, 0.0), (10.0, 10.0), (40.0, 20.0),
+              (0.0, 20.0)]]
+    try:
+        clip_loop_to_hemisphere(arrow, (0.0, math.pi / 2))
+    except NonConvexLoopError as exc:
+        print(f"raised {type(exc).__name__}: {exc}")
+        print(f"locator: {exc.location}; reflex vertex: {exc.vertex_index}")
+    else:  # pragma: no cover - defensive, must not happen
+        raise AssertionError("non-convex loop was not rejected")
 
     print()
     print("Done.")

@@ -27,11 +27,13 @@ from . import geometry as g
 from .errors import (
     DegenerateLoopError,
     InvalidInputError,
+    NonConvexLoopError,
     SelfIntersectionError,
 )
 from .models import (
     AmbiguousMarker,
     ArcParam,
+    ClippedLoop,
     Fragment,
     GeoPoint,
     SeamCrossing,
@@ -44,46 +46,104 @@ POLE_LAT_EPS = 1e-9
 SEAM_LON_EPS = 1e-9
 UNKNOWN = object()
 
+# Hemisphere clipping tolerances (documented in README).
+SIDE_EPS = 1e-12      # |x.pole| below this counts as "on" the clip circle
+CONVEX_EPS = 1e-9     # turning angles within this of 0 count as straight
+
 
 # --------------------------------------------------------------------------- #
 # Input handling
 # --------------------------------------------------------------------------- #
-def _as_point(value, index: int, scale: float = 1.0) -> GeoPoint:
+def _units_scale(units: str) -> float:
+    if units == "deg":
+        return math.pi / 180.0
+    if units == "rad":
+        return 1.0
+    raise InvalidInputError('units must be "rad" or "deg"', "units")
+
+
+def _as_point(value, what: str, scale: float = 1.0) -> GeoPoint:
     if isinstance(value, GeoPoint):
         lon0, lat0 = value.lon, value.lat
     else:
         if isinstance(value, (str, bytes)):
             raise InvalidInputError(
-                f"vertex {index} must be a (lon, lat) pair, not a string",
-                f"vertex {index}",
+                f"{what} must be a (lon, lat) pair, not a string", what,
             )
         try:
             lon0, lat0 = value
         except (TypeError, ValueError) as exc:
             raise InvalidInputError(
-                f"vertex {index} must be a (lon, lat) pair",
-                f"vertex {index}",
+                f"{what} must be a (lon, lat) pair", what,
             ) from exc
     # Validate the raw numbers first (bool, NaN, Infinity rejected) and only
     # then convert degrees -> radians.
-    lon0 = g.finite_number(lon0, f"vertex {index}.lon")
-    lat0 = g.finite_number(lat0, f"vertex {index}.lat")
+    lon0 = g.finite_number(lon0, f"{what}.lon")
+    lat0 = g.finite_number(lat0, f"{what}.lat")
     lon, lat = lon0 * scale, lat0 * scale
     if lat < -math.pi / 2 - 1e-12 or lat > math.pi / 2 + 1e-12:
         raise InvalidInputError(
-            f"vertex {index}.lat={lat:.12g} outside [-pi/2, pi/2]",
-            f"vertex {index}.lat",
+            f"{what}.lat={lat:.12g} outside [-pi/2, pi/2]",
+            f"{what}.lat",
         )
     if lon < -math.pi - 1e-12 or lon > math.pi + 1e-12:
         raise InvalidInputError(
-            f"vertex {index}.lon={lon:.12g} outside [-pi, pi]",
-            f"vertex {index}.lon",
+            f"{what}.lon={lon:.12g} outside [-pi, pi]",
+            f"{what}.lon",
         )
     lat = min(math.pi / 2, max(-math.pi / 2, lat))
     lon = ((lon + math.pi) % (2.0 * math.pi)) - math.pi
     if lon <= -math.pi:
         lon = math.pi
     return GeoPoint(lon, lat)
+
+
+def _validate_loop(points, units: str):
+    """Shared validation for every loop-consuming entry point.
+
+    Returns ``(pts, xyz, alphas)``: canonicalized vertices, their unit
+    vectors and the per-edge central angles.  Raises before returning
+    anything on any violation, so a failed call leaves no partial state.
+    """
+    scale = _units_scale(units)
+
+    try:
+        raw = list(points)
+    except TypeError as exc:
+        raise InvalidInputError(
+            "points must be an iterable of (lon, lat) pairs", "vertices"
+        ) from exc
+
+    if not (MIN_VERTICES <= len(raw) <= MAX_VERTICES):
+        raise InvalidInputError(
+            f"vertex count {len(raw)} outside [{MIN_VERTICES}, {MAX_VERTICES}]",
+            "vertices",
+        )
+
+    pts = [_as_point(v, f"vertex {k}", scale) for k, v in enumerate(raw)]
+    xyz = [g.lonlat_to_xyz(p.lon, p.lat) for p in pts]
+    n = len(pts)
+    alphas = [g.prepare_edge(xyz[i], xyz[(i + 1) % n], i) for i in range(n)]
+
+    # Reject non-adjacent self-intersection / overlap (closed-form, complete:
+    # two great-circle planes have at most two common points, both tested).
+    for i in range(n):
+        for j in range(i + 1, n):
+            if j == i + 1 or (i == 0 and j == n - 1):
+                continue
+            kind = g.arcs_intersect(
+                xyz[i], xyz[(i + 1) % n], alphas[i],
+                xyz[j], xyz[(j + 1) % n], alphas[j],
+            )
+            if kind != "none":
+                raise SelfIntersectionError(i, j, kind)
+
+    if g.great_circle_degenerate(xyz):
+        raise DegenerateLoopError(
+            "all vertices lie on one great circle; signed area undefined",
+            "loop",
+        )
+    return pts, xyz, alphas
 
 
 def _is_pole(point: GeoPoint) -> bool:
@@ -308,49 +368,8 @@ def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
     DegenerateLoopError
         All vertices lie on one great circle (signed area undefined).
     """
-    if units == "deg":
-        scale = math.pi / 180.0
-    elif units == "rad":
-        scale = 1.0
-    else:
-        raise InvalidInputError('units must be "rad" or "deg"', "units")
-
-    try:
-        raw = list(points)
-    except TypeError as exc:
-        raise InvalidInputError(
-            "points must be an iterable of (lon, lat) pairs", "vertices"
-        ) from exc
-
-    if not (MIN_VERTICES <= len(raw) <= MAX_VERTICES):
-        raise InvalidInputError(
-            f"vertex count {len(raw)} outside [{MIN_VERTICES}, {MAX_VERTICES}]",
-            "vertices",
-        )
-
-    pts = [_as_point(v, k, scale) for k, v in enumerate(raw)]
-    xyz = [g.lonlat_to_xyz(p.lon, p.lat) for p in pts]
+    pts, xyz, alphas = _validate_loop(points, units)
     n = len(pts)
-    alphas = [g.prepare_edge(xyz[i], xyz[(i + 1) % n], i) for i in range(n)]
-
-    # Reject non-adjacent self-intersection / overlap (closed-form, complete:
-    # two great-circle planes have at most two common points, both tested).
-    for i in range(n):
-        for j in range(i + 1, n):
-            if j == i + 1 or (i == 0 and j == n - 1):
-                continue
-            kind = g.arcs_intersect(
-                xyz[i], xyz[(i + 1) % n], alphas[i],
-                xyz[j], xyz[(j + 1) % n], alphas[j],
-            )
-            if kind != "none":
-                raise SelfIntersectionError(i, j, kind)
-
-    if g.great_circle_degenerate(xyz):
-        raise DegenerateLoopError(
-            "all vertices lie on one great circle; signed area undefined",
-            "loop",
-        )
     area = g.signed_area(xyz)
 
     descs = [
@@ -416,3 +435,164 @@ def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
 def unfold_loop_degrees(points) -> UnfoldedLoop:
     """Convenience wrapper: longitudes/latitudes given in degrees."""
     return unfold_loop(points, units="deg")
+
+
+# --------------------------------------------------------------------------- #
+# Hemisphere clipping of a convex loop
+# --------------------------------------------------------------------------- #
+def _check_convex(xyz) -> None:
+    """Reject a simple loop that is not convex (has a reflex vertex).
+
+    For a simple loop whose turning angles all share one sign, the enclosed
+    area is ``2*pi - sum(turns) < 2*pi`` (the all-straight case was already
+    rejected as degenerate), so same-sign turns are exactly "convex and
+    contained in an open hemisphere".  Turning angles within ``CONVEX_EPS``
+    of zero count as straight (collinear consecutive edges are allowed).
+    """
+    n = len(xyz)
+    sign = 0
+    for i in range(n):
+        t = g.turning_angle(xyz[i - 1], xyz[i], xyz[(i + 1) % n])
+        s = 1 if t > CONVEX_EPS else (-1 if t < -CONVEX_EPS else 0)
+        if s == 0:
+            continue
+        if sign == 0:
+            sign = s
+        elif s != sign:
+            raise NonConvexLoopError(i)
+
+
+def _clip_ring_xyz(xyz, alphas, pole_v):
+    """Sutherland-Hodgman clip of a convex loop against one hemisphere.
+
+    The hemisphere is ``{x : x.pole_v >= 0}`` (boundary included).  Along a
+    short arc ``X(t) = A*P + B*Q`` with ``A, B >= 0`` the side function
+    ``s(t) = A*s(P) + B*s(Q)`` is a positive combination of the endpoint
+    values, so an edge with both endpoints outside can never dip back in:
+    each edge contributes at most one crossing and the walk below is exact.
+    """
+    n = len(xyz)
+    side = [g.dot(v, pole_v) for v in xyz]
+    out = []
+    for i in range(n):
+        j = (i + 1) % n
+        p_in = side[i] >= -SIDE_EPS
+        q_in = side[j] >= -SIDE_EPS
+        if p_in and q_in:
+            out.append(xyz[j])  # includes edges lying on the clip circle
+            continue
+        crossing = g.arc_boundary_crossing(xyz[i], xyz[j], alphas[i], pole_v)
+        if crossing is None:
+            # Arc parallel to the horizon within round-off: the endpoint
+            # classification decides (defensive; unreachable for a genuine
+            # inside->outside transition).
+            if q_in:
+                out.append(xyz[j])
+            continue
+        _, x = crossing
+        if p_in:        # leaving the hemisphere
+            out.append(x)
+        else:           # entering the hemisphere
+            out.append(x)
+            out.append(xyz[j])
+    return out
+
+
+def _dedupe_ring(ring):
+    """Drop consecutive duplicate points (incl. wrap-around) from a ring."""
+    pts = []
+    for v in ring:
+        if pts and g.dot(pts[-1], v) > 1.0 - g.DUP_VERTEX_EPS:
+            continue
+        pts.append(v)
+    while len(pts) > 1 and g.dot(pts[0], pts[-1]) > 1.0 - g.DUP_VERTEX_EPS:
+        pts.pop()
+    return pts
+
+
+def clip_loop_to_hemisphere(points, pole, *, units: str = "rad") -> ClippedLoop:
+    """Intersect one convex, hole-free spherical loop with a hemisphere.
+
+    Parameters
+    ----------
+    points:
+        Iterable of 3..100 ``(lon, lat)`` pairs (or :class:`GeoPoint`),
+        implicitly closed, same contract as :func:`unfold_loop`.  The loop
+        must additionally be **convex** (all interior angles <= pi).
+    pole:
+        ``(lon, lat)`` of the hemisphere centre.  The hemisphere is the
+        closed set of points within 90 degrees of this pole; its bounding
+        great circle counts as inside.
+    units:
+        ``"rad"`` (default) or ``"deg"``; applies to both ``points`` and
+        ``pole``.
+
+    Returns
+    -------
+    ClippedLoop
+        ``status`` is ``"full"`` / ``"partial"`` / ``"empty"``; ``points``
+        is the clipped ring in the input orientation (empty tuple when
+        ``"empty"``); ``area`` is the non-negative intersection area and
+        ``signed_area`` carries the input orientation's sign.
+
+    Raises
+    ------
+    InvalidInputError
+        Bad count/type/range, NaN/Infinity, bool, or zero-length edge --
+        for the loop (``vertex k.*``) and for the pole (``pole.*``).
+    AntipodalAdjacentError
+        Consecutive vertices are (near) antipodal.
+    SelfIntersectionError
+        Two non-adjacent edges cross or overlap.
+    DegenerateLoopError
+        All vertices lie on one great circle.
+    NonConvexLoopError
+        The loop is simple but has a reflex vertex.
+    """
+    pts, xyz, alphas = _validate_loop(points, units)
+    pole_pt = _as_point(pole, "pole", _units_scale(units))
+    pole_v = g.lonlat_to_xyz(pole_pt.lon, pole_pt.lat)
+    _check_convex(xyz)
+
+    in_area = g.signed_area(xyz)
+    winding = "ccw" if in_area > 0 else "cw"
+
+    side = [g.dot(v, pole_v) for v in xyz]
+    if all(s >= -SIDE_EPS for s in side):
+        # Whole loop inside (vertices on the clip circle count as inside);
+        # return the input ring exactly as supplied.
+        return ClippedLoop(
+            status="full",
+            points=tuple(pts),
+            area=abs(in_area),
+            signed_area=in_area,
+            winding=winding,
+            pole=pole_pt,
+        )
+
+    ring = _dedupe_ring(_clip_ring_xyz(xyz, alphas, pole_v))
+    if len(ring) < 3 or g.great_circle_degenerate(ring):
+        # No contact at all, or contact collapsed to a point/arc (zero area).
+        return ClippedLoop(
+            status="empty",
+            points=(),
+            area=0.0,
+            signed_area=0.0,
+            winding=winding,
+            pole=pole_pt,
+        )
+
+    clipped_area = g.signed_area(ring)
+    return ClippedLoop(
+        status="partial",
+        points=tuple(GeoPoint(*g.xyz_to_lonlat(v)) for v in ring),
+        area=abs(clipped_area),
+        signed_area=clipped_area,
+        winding=winding,
+        pole=pole_pt,
+    )
+
+
+def clip_loop_to_hemisphere_degrees(points, pole) -> ClippedLoop:
+    """Convenience wrapper: longitudes/latitudes given in degrees."""
+    return clip_loop_to_hemisphere(points, pole, units="deg")

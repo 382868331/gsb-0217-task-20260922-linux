@@ -67,6 +67,22 @@ class SelfIntersectionError(GeometryError):
         )
 
 
+class NonConvexLoopError(GeometryError):
+    """The loop is simple but not convex; hemisphere clipping requires convex.
+
+    ``vertex_index`` is the first vertex whose turning angle disagrees with
+    the loop's dominant turn sign (a reflex corner).
+    """
+
+    def __init__(self, vertex_index: int):
+        self.vertex_index = vertex_index
+        super().__init__(
+            "loop is not convex (reflex turn); hemisphere clipping "
+            "requires a convex loop",
+            location=f"vertex {vertex_index}",
+        )
+
+
 class DegenerateLoopError(GeometryError):
     """The loop collapses onto a great circle; signed area is ambiguous.
 
