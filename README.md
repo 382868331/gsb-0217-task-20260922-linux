@@ -1,10 +1,14 @@
-# antimeridian — 球面环线的日期变更线展开
+# antimeridian — 球面环线的日期变更线展开与半球裁剪
 
 在单位球面上，对一条由**唯一较短大圆弧**（short great-circle arc）连接的
 闭环，计算其有向面积，并沿经度 180° 半子午线（国际日期变更线）把环分裂成
 各自经度连续的渲染片段；穿过极点的交点单独标记为 `ambiguous`，整段贴着切缝
 的边标记为 `coincident` 并原样保留。全部几何在三维单位向量上完成，**不对
 经纬度做平面插值**，因此不会产生平面投影假交点。
+
+此外，对**无洞凸**球面多边形提供与一个大圆半球的求交
+（`clip_loop_hemisphere`）：返回裁剪环与面积，覆盖极区、边落在裁剪大圆、
+全保留与全排除等情形。
 
 仅使用 Python 标准库。
 
@@ -26,14 +30,18 @@ python demo.py                            # 固定输入演示（远小于 8 秒
 
 ## 接口
 
-唯一核心入口（纯函数、无状态）：
+两个核心入口（均为纯函数、无状态）：
 
 ```python
-from antimeridian import unfold_loop
+from antimeridian import unfold_loop, clip_loop_hemisphere
 
 result = unfold_loop(points)                 # 经纬度均为弧度
 result = unfold_loop(points, units="deg")    # 或角度
 # 等价便捷封装： unfold_loop_degrees(points)
+
+clip = clip_loop_hemisphere(points, pole)                 # 凸多边形 ∩ 半球
+clip = clip_loop_hemisphere(points, pole, units="deg")
+# 等价便捷封装： clip_loop_hemisphere_degrees(points, pole)
 ```
 
 - `points`：3–100 个 `(lon, lat)` 二元组（也接受 `GeoPoint`）。环隐式闭合：
@@ -63,6 +71,31 @@ result = unfold_loop(points, units="deg")    # 或角度
 从而保证同一物理顶点在相邻片段中经度一致；只有普通（非极点）连接连续，
 极点连接被 `ambiguous` 断开。
 
+### 半球裁剪：`clip_loop_hemisphere(points, pole)`
+
+- `points`：与 `unfold_loop` 相同的契约（3–100 个顶点、隐式闭合、
+  唯一短大圆弧边、拒绝对跖相邻点、拒绝自交与共大圆退化），另要求环
+  **凸**（所有顶点转向一致；顺时针凸环同样接受）。
+- `pole`：半球中心的 `(lon, lat)`（也接受 `GeoPoint`），保留区域为闭半球
+  `{x : x·pole ≥ 0}`，边界大圆本身算作保留侧。校验规则与顶点相同
+  （NaN/Inf/bool/越界一律 `InvalidInputError`，定位串为 `pole.lon` 等）。
+- 返回不可变的 `ClippedLoop`：
+
+| 字段 | 含义 |
+|---|---|
+| `pole` | 校验后的半球中心 |
+| `status` | `"full"`（多边形整体在半球内，`ring` 即输入环）/ `"empty"`（交集为空或仅测度零的接触，`ring` 为空、面积为 0）/ `"clipped"`（真子集） |
+| `ring` | 裁剪环顶点 `GeoPoint` 元组（弧度经纬），沿用输入环方向，隐式闭合；每条边仍是唯一短大圆弧 |
+| `area` | 交集的非负面积（球面度，`[0, 2π)`） |
+| `signed_area` | 裁剪环的有向面积（符号随输入环方向）；空时为 0 |
+
+裁剪方法为球面 Sutherland–Hodgman：逐边对裁剪平面分类，边与裁剪大圆的
+交点由**两个大圆平面相交**闭式求得（不做经纬平面插值）。两个端点都在
+半球外的短弧整段在外（弧上点是端点的正组合），因此逐边裁剪是精确的。
+边落在裁剪大圆上时该边原样保留；若裁剪结果在大圆边界链上出现对跖点对
+（半圆边界弧，短弧不唯一），确定性地插入位于多边形一侧的中点，保证
+输出每条边仍严格小于 π——这是输出契约的兜底，正常输入不会触发。
+
 ## 错误语义
 
 所有错误继承 `GeometryError`（也是 `ValueError`），并带可定位的
@@ -76,6 +109,8 @@ result = unfold_loop(points, units="deg")    # 或角度
   给出边对）。相邻边共享顶点不算自交。
 - `DegenerateLoopError`：所有顶点共面于同一大圆，两侧各包一个半球，
   有向面积无法唯一定义，直接报错而不是任意给符号。
+- `NonConvexLoopError`：仅 `clip_loop_hemisphere`——环存在凹（reflex）
+  顶点，半球裁剪要求凸环；`vertex_index` 给出首个转向矛盾的顶点。
 
 非法输入一律抛错、**不静默纠正或夹紧**（仅对舍入进入 `±π/2`、`±π` 的
 浮点做同值规范化）。API 为单个纯函数，校验全部通过后才构造结果，
@@ -111,6 +146,10 @@ result = unfold_loop(points, units="deg")    # 或角度
    `A = 2π − Σ 转角`，切向量在顶点切平面内由精确大圆弧方向取得，
    `atan2` 给出带符号转角（左转/左侧为正），结果规范化进 `(-2π,2π]`。
    这是按 4π 取模的有向面积；对无自交简单环，其绝对值即所围较小区域面积。
+7. **半球裁剪用球面 Sutherland–Hodgman。** 凸性由逐顶点转向符号一致性
+   判定（简单环上这正好等价于凸）；逐边对裁剪平面 `x·n = 0` 分类，
+   交点由边所在大圆平面与裁剪平面相交闭式给出。短弧端点同在外则整段
+   在外，故不需要差集拆分或多环结果：凸环与半球的交仍是单个凸环。
 
 ## 误差口径
 
@@ -128,6 +167,11 @@ result = unfold_loop(points, units="deg")    # 或角度
 - **角度守卫带**：对跖 `|P·Q+1| < 1e-12` 拒绝；重合顶点 `P·Q > 1-1e-12`
   拒绝；经线/极点判定阈值 1e-9（弧度）。这些是输入安全边界，不用于放宽
   面积断言。
+- **半球裁剪**：`|x·n| < 1e-12` 视为在裁剪大圆上（归保留侧）；凸性转向
+  容差 1e-9 弧度。解析用例（八分之一球被 `x=y` 平面平分，面积 `π/4`）
+  精确到机器精度（观测误差 0）；互补半球面积和恒等式在 40 个确定性
+  随机凸环上验证，判定门限 `delta=1e-9`；裁剪环面积与独立参考
+  （Van Oosterom 扇形和）互校 `delta=1e-12`。
 
 ## 已知限制 / 实现子集
 
@@ -143,6 +187,11 @@ result = unfold_loop(points, units="deg")    # 或角度
 - 近极但非极（角距离小于 1e-9 弧度 ≈ 0.00000006°）的穿越按普通切缝穿越
   处理；真正精确过极的弧才标 `ambiguous`。
 - 未做多边形布尔运算或覆盖修正（overpass/fix）；本库只做单环展开。
+- 半球裁剪只覆盖**凸无洞**单环与**单个**大圆半球的交：不实现多环、
+  孔洞、差集拆分或非凸环裁剪（非凸输入报 `NonConvexLoopError` 而不是
+  给出近似结果），也不提供全局面积守恒证书。
+- 裁剪结果状态只有 `full / empty / clipped` 三类；仅边界相触
+  （测度零）归入 `empty`，面积为 0。
 
 ## 目录
 
@@ -150,6 +199,7 @@ result = unfold_loop(points, units="deg")    # 或角度
 antimeridian/          # 题库（核心，标准库）
   __init__.py          # 公开导出
   core.py              # unfold_loop：校验、自交拒绝、展开编排
+  clip.py              # clip_loop_hemisphere：凸环 ∩ 大圆半球
   geometry.py          # 三维大圆弧/切缝/极点/面积原语
   models.py            # 不可变数据结构
   errors.py            # 错误体系与定位
@@ -158,6 +208,7 @@ tests/
   test_area.py         # pi/2 解析、方向反转、旋转不变
   test_seam.py         # 跨缝分裂、coincident、防平面假交点、近极
   test_pole.py         # 极点顶点与内部穿极 ambiguous
+  test_clip.py         # 半球裁剪：解析、极区、边落大圆、全保留/排除、错误
   test_errors.py       # NaN/Inf/bool/越界/数量/对跖/自交/退化/纯度
   test_reference_crosscheck.py  # 与独立参考的交叉验证
 demo.py                # 固定输入演示
@@ -170,3 +221,6 @@ README.md
 立体角扇形和（核心用 Gauss–Bonnet 转角和），切缝事件用对精确 SLERP 的
 独立密采样（核心用平面闭式相交），穿极用加弧长判据（核心用 SLERP 基
 反演）。两套独立推导一致才作为正确性依据；往返一致仅作补充，不作预言机。
+半球裁剪的期望值来自手算解析例子（`π/4` 半八分之一球）、对称平分与
+**互补半球面积和恒等式**（`area(H) + area(-H) = area(多边形)`），
+裁剪环面积另用参考扇形和独立复算，均不调用被测实现生成期望值。

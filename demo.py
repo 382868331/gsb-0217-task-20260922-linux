@@ -22,7 +22,9 @@ from __future__ import annotations
 import math
 
 from antimeridian import (
+    NonConvexLoopError,
     SelfIntersectionError,
+    clip_loop_hemisphere,
     unfold_loop,
 )
 from antimeridian.geometry import lonlat_to_xyz
@@ -137,6 +139,62 @@ def main() -> None:
         print(f"locator: {exc.location}; edge pair: {exc.edge_indices}")
     else:  # pragma: no cover - defensive, must not happen
         raise AssertionError("self-intersecting loop was not rejected")
+
+    # ------------------------------------------------------------------ #
+    # 4. Convex polygon clipped by a great-circle hemisphere.
+    # ------------------------------------------------------------------ #
+    section("4. Convex polygon intersected with a great-circle hemisphere")
+
+    # 4a. Analytic: the octant triangle clipped by the plane x == y keeps a
+    # (90, 90, 45)-degree triangle -> area exactly pi/4.
+    print("4a. octant triangle, clip hemisphere centred at (135, 0) deg")
+    r = clip_loop_hemisphere(octant, (135.0 * D, 0.0))
+    print(f"status               = {r.status}")
+    print("clipped ring (lon,lat) deg:",
+          [(round(p.lon / D, 3), round(p.lat / D, 3)) for p in r.ring])
+    print(f"area                 = {r.area:.15f}")
+    print(f"analytic pi/4        = {math.pi / 4:.15f}")
+    print(f"absolute difference  = {abs(r.area - math.pi / 4):.3e}")
+
+    # 4b. Polar region: a cap around the north pole split by a meridian
+    # hemisphere; the two complementary clips must partition the cap.
+    print()
+    print("4b. polar cap (lat 80 deg) split by complementary hemispheres")
+    cap_deg = [(0.0, 80.0), (120.0, 80.0), (-120.0, 80.0)]
+    cap = [(lo * D, la * D) for lo, la in cap_deg]
+    east = clip_loop_hemisphere(cap, (0.0, 0.0))
+    west = clip_loop_hemisphere(cap, (180.0 * D, 0.0))
+    full = unfold_loop(cap).signed_area
+    print(f"east clip: status={east.status}, area={east.area:.12f}")
+    print(f"west clip: status={west.status}, area={west.area:.12f}")
+    print(f"sum - whole cap area = {east.area + west.area - full:.3e}")
+
+    # 4c. Boundary: a polygon edge lying exactly on the clip great circle.
+    print()
+    print("4c. polygon with an edge on the clip great circle")
+    quad_deg = [(0.0, -10.0), (0.0, 10.0), (20.0, 10.0), (20.0, -10.0)]
+    quad = [(lo * D, la * D) for lo, la in quad_deg]
+    kept = clip_loop_hemisphere(quad, (90.0 * D, 0.0))
+    dropped = clip_loop_hemisphere(quad, (-90.0 * D, 0.0))
+    print(f"kept-side clip : status={kept.status}, "
+          f"area={kept.area:.12f} (whole polygon)")
+    print(f"other side     : status={dropped.status}, "
+          f"ring={dropped.ring}, area={dropped.area}")
+
+    # 4d. An actually triggered rejection: a non-convex (reflex) loop.
+    print()
+    print("4d. Rejection boundary -- non-convex loop cannot be clipped")
+    concave_deg = [(0.0, 0.0), (20.0, 0.0), (10.0, 5.0),
+                   (20.0, 20.0), (0.0, 20.0)]
+    print("vertices (lon,lat) deg:", concave_deg)
+    try:
+        clip_loop_hemisphere([(lo * D, la * D) for lo, la in concave_deg],
+                             (0.0, 0.0))
+    except NonConvexLoopError as exc:
+        print(f"raised {type(exc).__name__}: {exc}")
+        print(f"locator: {exc.location}; vertex: {exc.vertex_index}")
+    else:  # pragma: no cover - defensive, must not happen
+        raise AssertionError("non-convex loop was not rejected")
 
     print()
     print("Done.")

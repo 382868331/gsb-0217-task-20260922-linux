@@ -74,3 +74,20 @@ class DegenerateLoopError(GeometryError):
     hemisphere on *both* sides, so a signed area in ``(-2*pi, 2*pi]`` cannot
     be assigned.  Raised instead of silently returning an arbitrary sign.
     """
+
+
+class NonConvexLoopError(GeometryError):
+    """The loop is not convex; hemisphere clipping requires convexity.
+
+    Raised at the first vertex whose turning direction contradicts the
+    orientation established by earlier vertices (a reflex vertex).
+    ``vertex_index`` gives that zero-based vertex.
+    """
+
+    def __init__(self, vertex_index: int):
+        self.vertex_index = vertex_index
+        super().__init__(
+            "loop is not convex (reflex turn); hemisphere clipping "
+            "requires a convex loop",
+            location=f"vertex {vertex_index}",
+        )

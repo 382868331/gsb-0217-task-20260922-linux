@@ -48,36 +48,36 @@ UNKNOWN = object()
 # --------------------------------------------------------------------------- #
 # Input handling
 # --------------------------------------------------------------------------- #
-def _as_point(value, index: int, scale: float = 1.0) -> GeoPoint:
+def _as_point(value, label: str, scale: float = 1.0) -> GeoPoint:
     if isinstance(value, GeoPoint):
         lon0, lat0 = value.lon, value.lat
     else:
         if isinstance(value, (str, bytes)):
             raise InvalidInputError(
-                f"vertex {index} must be a (lon, lat) pair, not a string",
-                f"vertex {index}",
+                f"{label} must be a (lon, lat) pair, not a string",
+                label,
             )
         try:
             lon0, lat0 = value
         except (TypeError, ValueError) as exc:
             raise InvalidInputError(
-                f"vertex {index} must be a (lon, lat) pair",
-                f"vertex {index}",
+                f"{label} must be a (lon, lat) pair",
+                label,
             ) from exc
     # Validate the raw numbers first (bool, NaN, Infinity rejected) and only
     # then convert degrees -> radians.
-    lon0 = g.finite_number(lon0, f"vertex {index}.lon")
-    lat0 = g.finite_number(lat0, f"vertex {index}.lat")
+    lon0 = g.finite_number(lon0, f"{label}.lon")
+    lat0 = g.finite_number(lat0, f"{label}.lat")
     lon, lat = lon0 * scale, lat0 * scale
     if lat < -math.pi / 2 - 1e-12 or lat > math.pi / 2 + 1e-12:
         raise InvalidInputError(
-            f"vertex {index}.lat={lat:.12g} outside [-pi/2, pi/2]",
-            f"vertex {index}.lat",
+            f"{label}.lat={lat:.12g} outside [-pi/2, pi/2]",
+            f"{label}.lat",
         )
     if lon < -math.pi - 1e-12 or lon > math.pi + 1e-12:
         raise InvalidInputError(
-            f"vertex {index}.lon={lon:.12g} outside [-pi, pi]",
-            f"vertex {index}.lon",
+            f"{label}.lon={lon:.12g} outside [-pi, pi]",
+            f"{label}.lon",
         )
     lat = min(math.pi / 2, max(-math.pi / 2, lat))
     lon = ((lon + math.pi) % (2.0 * math.pi)) - math.pi
@@ -276,6 +276,65 @@ def _unwrapped_fragments(desc, lon_start):
 
 
 # --------------------------------------------------------------------------- #
+# Shared validation
+# --------------------------------------------------------------------------- #
+def _units_scale(units) -> float:
+    if units == "deg":
+        return math.pi / 180.0
+    if units == "rad":
+        return 1.0
+    raise InvalidInputError('units must be "rad" or "deg"', "units")
+
+
+def _validate_loop(points, units):
+    """Structural and geometric validation shared by all loop entry points.
+
+    Returns ``(pts, xyz, alphas)``: validated :class:`GeoPoint` vertices,
+    their unit vectors and the per-edge central angles.  Raises before
+    returning anything on any violation, so callers never see partial state.
+    """
+    scale = _units_scale(units)
+
+    try:
+        raw = list(points)
+    except TypeError as exc:
+        raise InvalidInputError(
+            "points must be an iterable of (lon, lat) pairs", "vertices"
+        ) from exc
+
+    if not (MIN_VERTICES <= len(raw) <= MAX_VERTICES):
+        raise InvalidInputError(
+            f"vertex count {len(raw)} outside [{MIN_VERTICES}, {MAX_VERTICES}]",
+            "vertices",
+        )
+
+    pts = [_as_point(v, f"vertex {k}", scale) for k, v in enumerate(raw)]
+    xyz = [g.lonlat_to_xyz(p.lon, p.lat) for p in pts]
+    n = len(pts)
+    alphas = [g.prepare_edge(xyz[i], xyz[(i + 1) % n], i) for i in range(n)]
+
+    # Reject non-adjacent self-intersection / overlap (closed-form, complete:
+    # two great-circle planes have at most two common points, both tested).
+    for i in range(n):
+        for j in range(i + 1, n):
+            if j == i + 1 or (i == 0 and j == n - 1):
+                continue
+            kind = g.arcs_intersect(
+                xyz[i], xyz[(i + 1) % n], alphas[i],
+                xyz[j], xyz[(j + 1) % n], alphas[j],
+            )
+            if kind != "none":
+                raise SelfIntersectionError(i, j, kind)
+
+    if g.great_circle_degenerate(xyz):
+        raise DegenerateLoopError(
+            "all vertices lie on one great circle; signed area undefined",
+            "loop",
+        )
+    return pts, xyz, alphas
+
+
+# --------------------------------------------------------------------------- #
 # Public entry point
 # --------------------------------------------------------------------------- #
 def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
@@ -308,49 +367,8 @@ def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
     DegenerateLoopError
         All vertices lie on one great circle (signed area undefined).
     """
-    if units == "deg":
-        scale = math.pi / 180.0
-    elif units == "rad":
-        scale = 1.0
-    else:
-        raise InvalidInputError('units must be "rad" or "deg"', "units")
-
-    try:
-        raw = list(points)
-    except TypeError as exc:
-        raise InvalidInputError(
-            "points must be an iterable of (lon, lat) pairs", "vertices"
-        ) from exc
-
-    if not (MIN_VERTICES <= len(raw) <= MAX_VERTICES):
-        raise InvalidInputError(
-            f"vertex count {len(raw)} outside [{MIN_VERTICES}, {MAX_VERTICES}]",
-            "vertices",
-        )
-
-    pts = [_as_point(v, k, scale) for k, v in enumerate(raw)]
-    xyz = [g.lonlat_to_xyz(p.lon, p.lat) for p in pts]
+    pts, xyz, alphas = _validate_loop(points, units)
     n = len(pts)
-    alphas = [g.prepare_edge(xyz[i], xyz[(i + 1) % n], i) for i in range(n)]
-
-    # Reject non-adjacent self-intersection / overlap (closed-form, complete:
-    # two great-circle planes have at most two common points, both tested).
-    for i in range(n):
-        for j in range(i + 1, n):
-            if j == i + 1 or (i == 0 and j == n - 1):
-                continue
-            kind = g.arcs_intersect(
-                xyz[i], xyz[(i + 1) % n], alphas[i],
-                xyz[j], xyz[(j + 1) % n], alphas[j],
-            )
-            if kind != "none":
-                raise SelfIntersectionError(i, j, kind)
-
-    if g.great_circle_degenerate(xyz):
-        raise DegenerateLoopError(
-            "all vertices lie on one great circle; signed area undefined",
-            "loop",
-        )
     area = g.signed_area(xyz)
 
     descs = [

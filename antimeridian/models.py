@@ -157,3 +157,37 @@ class UnfoldedLoop:
     ambiguous_markers: tuple[AmbiguousMarker, ...]
     signed_area: float
     area_winding: str
+
+
+@dataclass(frozen=True)
+class ClippedLoop:
+    """Result of :func:`antimeridian.clip.clip_loop_hemisphere`.
+
+    Attributes
+    ----------
+    pole:
+        The clip hemisphere's centre (kept side), as validated.
+    status:
+        ``"full"``    -- the whole polygon lies in the kept hemisphere;
+                         ``ring`` is the input loop unchanged;
+        ``"empty"``   -- the intersection is empty (at most a boundary
+                         touch); ``ring`` is empty and both areas are 0;
+        ``"clipped"`` -- a proper subset remains.
+    ring:
+        Vertices of the clipped ring as :class:`GeoPoint` (lon/lat radians),
+        in the input's orientation, implicitly closed.  Every edge is again
+        a unique short great-circle arc (an antipodal pair produced on the
+        clip circle is split by an inserted midpoint, never left ambiguous).
+        Empty when ``status == "empty"``.
+    area:
+        Non-negative area of the intersection in steradians, ``[0, 2*pi)``.
+    signed_area:
+        Oriented area of the clipped ring (sign follows the input winding);
+        0 when empty.
+    """
+
+    pole: GeoPoint
+    status: str
+    ring: tuple[GeoPoint, ...]
+    area: float
+    signed_area: float
