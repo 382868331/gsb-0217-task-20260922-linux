@@ -74,3 +74,15 @@ class DegenerateLoopError(GeometryError):
     hemisphere on *both* sides, so a signed area in ``(-2*pi, 2*pi]`` cannot
     be assigned.  Raised instead of silently returning an arbitrary sign.
     """
+
+
+class UnsupportedError(GeometryError):
+    """The request is well-formed but outside the supported geometric subset.
+
+    Raised by :func:`antimeridian.region.split_region_at_seam` when the
+    loop (which already passed the ordinary simplicity validation) does not
+    lie, together with its enclosed region, inside the caller-given open
+    hemisphere, or passes through a pole.  This is a deliberate, locatable
+    "unsupported" verdict -- distinct from malformed input
+    (:class:`InvalidInputError`) -- and never a silent fallback.
+    """

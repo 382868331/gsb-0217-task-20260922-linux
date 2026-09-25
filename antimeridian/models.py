@@ -157,3 +157,91 @@ class UnfoldedLoop:
     ambiguous_markers: tuple[AmbiguousMarker, ...]
     signed_area: float
     area_winding: str
+
+
+
+@dataclass(frozen=True)
+class RegionSegment:
+    """One boundary segment of a seam-closed fillable region loop.
+
+    Attributes
+    ----------
+    kind:
+        `"arc"`        -- a sub-arc of an original loop edge;
+        `"coincident"` -- a whole original edge lying on the seam, kept
+                            exactly once under the original source rule;
+        `"seam"`       -- a synthetic closing edge along the 180-degree
+                            half-meridian (a "fill" edge, not source data).
+    start, end:
+        Endpoint geographic points.  Seam-joining endpoints carry the exact
+        canonical seam longitude `+pi`.
+    edge_index:
+        Zero-based index of the originating input edge for `"arc"` and
+        `"coincident"` segments; `None` for `"seam"` fill edges.
+    t_start, t_end:
+        Parameter range on the *original* edge arc (SLERP parameter, as in
+        :class:`ArcParam`); `None` for `"seam"` fill edges.
+    central_angle:
+        Length of this segment in radians (for `"arc"` this is
+        `(t_end - t_start) * original central_angle`).
+    """
+
+    kind: str
+    start: GeoPoint
+    end: GeoPoint
+    edge_index: int | None = None
+    t_start: float | None = None
+    t_end: float | None = None
+    central_angle: float = 0.0
+
+
+@dataclass(frozen=True)
+class RegionLoop:
+    """One closed, fillable loop of a seam-split region.
+
+    `segments` are ordered head-to-tail
+    (`segments[k].end == segments[k+1].start`, cyclically).  `side` is
+    `"east"` (canonical longitude > 0) or `"west"` -- the side of the
+    seam the loop's off-seam boundary lies on.  `signed_area` is the
+    directed area in `(-2*pi, 2*pi]` with the same left-positive
+    convention as :class:`UnfoldedLoop`; the loop inherits the input
+    orientation.
+    """
+
+    index: int
+    side: str
+    segments: tuple[RegionSegment, ...]
+    signed_area: float
+
+
+@dataclass(frozen=True)
+class SplitRegion:
+    """Result of :func:`antimeridian.region.split_region_at_seam`.
+
+    Attributes
+    ----------
+    loops:
+        Closed fillable loops tiling the original region; the sum of their
+        directed areas equals `signed_area` and their synthetic seam
+        edges cancel pairwise as a 1-chain on the 180-degree meridian.
+    arcs:
+        Original arc parameters, in input edge order (same convention as
+        :class:`UnfoldedLoop`).
+    hemisphere_center:
+        The validated caller-given open-hemisphere centre.
+    signed_area:
+        Directed area of the whole region in `(-2*pi, 2*pi]` (left side
+        positive), identical to :func:`antimeridian.unfold_loop`'s value.
+    area_winding:
+        `"ccw"` / `"cw"` / `"zero"`.
+    seam_crossing_count:
+        Number of genuine transversal seam crossings at which the loop was
+        cut.  Tangential touches and coincident edges are not crossings.
+    """
+
+    loops: tuple[RegionLoop, ...]
+    arcs: tuple[ArcParam, ...]
+    hemisphere_center: GeoPoint
+    signed_area: float
+    area_winding: str
+    seam_crossing_count: int

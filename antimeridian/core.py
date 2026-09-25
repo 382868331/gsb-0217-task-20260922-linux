@@ -48,36 +48,38 @@ UNKNOWN = object()
 # --------------------------------------------------------------------------- #
 # Input handling
 # --------------------------------------------------------------------------- #
-def _as_point(value, index: int, scale: float = 1.0) -> GeoPoint:
+def _as_point(value, index: int, scale: float = 1.0,
+              label: str = "vertex") -> GeoPoint:
+    what = f"{label} {index}" if label == "vertex" else label
     if isinstance(value, GeoPoint):
         lon0, lat0 = value.lon, value.lat
     else:
         if isinstance(value, (str, bytes)):
             raise InvalidInputError(
-                f"vertex {index} must be a (lon, lat) pair, not a string",
-                f"vertex {index}",
+                f"{what} must be a (lon, lat) pair, not a string",
+                what,
             )
         try:
             lon0, lat0 = value
         except (TypeError, ValueError) as exc:
             raise InvalidInputError(
-                f"vertex {index} must be a (lon, lat) pair",
-                f"vertex {index}",
+                f"{what} must be a (lon, lat) pair",
+                what,
             ) from exc
     # Validate the raw numbers first (bool, NaN, Infinity rejected) and only
     # then convert degrees -> radians.
-    lon0 = g.finite_number(lon0, f"vertex {index}.lon")
-    lat0 = g.finite_number(lat0, f"vertex {index}.lat")
+    lon0 = g.finite_number(lon0, f"{what}.lon")
+    lat0 = g.finite_number(lat0, f"{what}.lat")
     lon, lat = lon0 * scale, lat0 * scale
     if lat < -math.pi / 2 - 1e-12 or lat > math.pi / 2 + 1e-12:
         raise InvalidInputError(
-            f"vertex {index}.lat={lat:.12g} outside [-pi/2, pi/2]",
-            f"vertex {index}.lat",
+            f"{what}.lat={lat:.12g} outside [-pi/2, pi/2]",
+            f"{what}.lat",
         )
     if lon < -math.pi - 1e-12 or lon > math.pi + 1e-12:
         raise InvalidInputError(
-            f"vertex {index}.lon={lon:.12g} outside [-pi, pi]",
-            f"vertex {index}.lon",
+            f"{what}.lon={lon:.12g} outside [-pi, pi]",
+            f"{what}.lon",
         )
     lat = min(math.pi / 2, max(-math.pi / 2, lat))
     lon = ((lon + math.pi) % (2.0 * math.pi)) - math.pi
@@ -275,38 +277,12 @@ def _unwrapped_fragments(desc, lon_start):
     return fr, [crossing], u_end
 
 
-# --------------------------------------------------------------------------- #
-# Public entry point
-# --------------------------------------------------------------------------- #
-def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
-    """Validate and unfold one closed spherical loop.
+def _validate_loop(points, units: str):
+    """Shared structural validation for every public entry point.
 
-    Parameters
-    ----------
-    points:
-        Iterable of 3..100 ``(lon, lat)`` pairs (or :class:`GeoPoint`).
-        The loop is closed implicitly: an edge from the last vertex back to
-        the first is added.  Angles are radians by default; pass
-        ``units="deg"`` for degrees.
-    units:
-        ``"rad"`` (default) or ``"deg"``.
-
-    Returns
-    -------
-    UnfoldedLoop
-        Original arc parameters, continuous-longitude fragments, real seam
-        crossings, pole markers and the signed area.
-
-    Raises
-    ------
-    InvalidInputError
-        Bad count/type/range, NaN/Infinity, bool, or zero-length edge.
-    AntipodalAdjacentError
-        Consecutive vertices are (near) antipodal.
-    SelfIntersectionError
-        Two non-adjacent edges cross or overlap.
-    DegenerateLoopError
-        All vertices lie on one great circle (signed area undefined).
+    Returns ``(pts, xyz, alphas)``: validated vertices, their unit vectors
+    and per-edge central angles.  Raises before returning anything on any
+    violation, so callers never see partial state.
     """
     if units == "deg":
         scale = math.pi / 180.0
@@ -351,6 +327,44 @@ def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
             "all vertices lie on one great circle; signed area undefined",
             "loop",
         )
+    return pts, xyz, alphas
+
+
+# --------------------------------------------------------------------------- #
+# Public entry point
+# --------------------------------------------------------------------------- #
+def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
+    """Validate and unfold one closed spherical loop.
+
+    Parameters
+    ----------
+    points:
+        Iterable of 3..100 ``(lon, lat)`` pairs (or :class:`GeoPoint`).
+        The loop is closed implicitly: an edge from the last vertex back to
+        the first is added.  Angles are radians by default; pass
+        ``units="deg"`` for degrees.
+    units:
+        ``"rad"`` (default) or ``"deg"``.
+
+    Returns
+    -------
+    UnfoldedLoop
+        Original arc parameters, continuous-longitude fragments, real seam
+        crossings, pole markers and the signed area.
+
+    Raises
+    ------
+    InvalidInputError
+        Bad count/type/range, NaN/Infinity, bool, or zero-length edge.
+    AntipodalAdjacentError
+        Consecutive vertices are (near) antipodal.
+    SelfIntersectionError
+        Two non-adjacent edges cross or overlap.
+    DegenerateLoopError
+        All vertices lie on one great circle (signed area undefined).
+    """
+    pts, xyz, alphas = _validate_loop(points, units)
+    n = len(pts)
     area = g.signed_area(xyz)
 
     descs = [

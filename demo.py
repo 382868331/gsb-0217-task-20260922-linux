@@ -23,6 +23,8 @@ import math
 
 from antimeridian import (
     SelfIntersectionError,
+    UnsupportedError,
+    split_region_at_seam,
     unfold_loop,
 )
 from antimeridian.geometry import lonlat_to_xyz
@@ -124,9 +126,52 @@ def main() -> None:
     print(f"ambiguous pole markers: {len(r.ambiguous_markers)} (none here)")
 
     # ------------------------------------------------------------------ #
-    # 3. An actually triggered rejection boundary.
+    # 3. Seam-closed fillable loops: concave region crossing the seam
+    #    four times (a band with a notch cut into it).
     # ------------------------------------------------------------------ #
-    section("3. Rejection boundary -- self-intersecting (bow-tie) loop")
+    section("3. split_region_at_seam -- seam-closed fillable loops")
+    region_deg = [(170.0, 10.0), (-170.0, 10.0), (-170.0, 50.0),
+                  (170.0, 50.0), (175.0, 30.0), (-175.0, 30.0)]
+    center = (180.0, 30.0)
+    sr = split_region_at_seam(region_deg, center, units="deg")
+    print("vertices (lon,lat) deg:", region_deg)
+    print("open hemisphere centre (lon,lat) deg:", center)
+    print(f"genuine seam crossings: {sr.seam_crossing_count}")
+    print(f"fillable loops produced: {len(sr.loops)} "
+          f"(east/west partition of the region)")
+    for lp in sr.loops:
+        print(f"  loop {lp.index} ({lp.side:4s}), signed area "
+              f"{lp.signed_area:.9f}:")
+        for s in lp.segments:
+            if s.kind == "seam":
+                tag = "FILL edge along the seam"
+            elif s.kind == "coincident":
+                tag = f"original coincident edge {s.edge_index}"
+            else:
+                tag = (f"original edge {s.edge_index}, arc parameter "
+                       f"t in [{s.t_start:.6f}, {s.t_end:.6f}]")
+            print(f"    {s.kind:10s} "
+                  f"({s.start.lon/D:7.2f},{s.start.lat/D:6.2f}) -> "
+                  f"({s.end.lon/D:7.2f},{s.end.lat/D:6.2f})  {tag}")
+    pieces_area = sum(lp.signed_area for lp in sr.loops)
+    print(f"sum of loop areas = {pieces_area:.15f}")
+    print(f"whole-region area = {sr.signed_area:.15f} "
+          f"(difference {abs(pieces_area - sr.signed_area):.2e})")
+
+    # An actually triggered unsupported verdict: the same loop is not
+    # contained in the hemisphere centred on (0, 0).
+    try:
+        split_region_at_seam(region_deg, (0.0, 0.0), units="deg")
+    except UnsupportedError as exc:
+        print(f"unsupported verdict for centre (0, 0) deg: {exc}")
+        print(f"locator: {exc.location}")
+    else:  # pragma: no cover - defensive, must not happen
+        raise AssertionError("outside-hemisphere loop was not refused")
+
+    # ------------------------------------------------------------------ #
+    # 4. An actually triggered rejection boundary.
+    # ------------------------------------------------------------------ #
+    section("4. Rejection boundary -- self-intersecting (bow-tie) loop")
     bowtie_deg = [(-20.0, 0.0), (20.0, 0.0), (-20.0, 20.0), (20.0, 20.0)]
     print("vertices (lon,lat) deg:", bowtie_deg)
     print("opposite edges cross each other -> must be refused")

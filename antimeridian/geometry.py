@@ -340,3 +340,40 @@ def arcs_intersect(p1, q1, a1, p2, q2, a2) -> str:
                 and T_EPS < t1 < 1 - T_EPS and T_EPS < t2 < 1 - T_EPS):
             return "overlap"
     return "none"
+
+
+# --------------------------------------------------------------------------- #
+# Gnomonic projection (used to decide pole containment for seam pairing)
+# --------------------------------------------------------------------------- #
+def gnomonic_frame(center_xyz):
+    """Orthonormal tangent frame (e1, e2) at a unit-vector centre."""
+    ref = (0.0, 0.0, 1.0) if abs(center_xyz[2]) < 0.9 else (0.0, 1.0, 0.0)
+    e1 = normalize(cross(ref, center_xyz))
+    e2 = cross(center_xyz, e1)
+    return e1, e2
+
+
+def gnomonic_project(v, center_xyz, e1, e2):
+    """Point v in the open hemisphere -> (u1, u2) on the tangent plane.
+
+    Great-circle arcs map to straight segments, and the projection is a
+    homeomorphism of the open hemisphere, so planar even-odd point-in-
+    polygon tests remain exact for simple geodesic loops.
+    """
+    s = dot(v, center_xyz)
+    return dot(v, e1) / s, dot(v, e2) / s
+
+
+def planar_point_inside(poly_xy, pt_xy) -> bool:
+    """Even-odd ray cast to the right for a closed planar polygon."""
+    x, y = pt_xy
+    inside = False
+    m = len(poly_xy)
+    for k in range(m):
+        x1, y1 = poly_xy[k]
+        x2, y2 = poly_xy[(k + 1) % m]
+        if (y1 > y) != (y2 > y):
+            xc = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+            if xc > x:
+                inside = not inside
+    return inside

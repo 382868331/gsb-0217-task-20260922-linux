@@ -6,6 +6,10 @@
 的边标记为 `coincident` 并原样保留。全部几何在三维单位向量上完成，**不对
 经纬度做平面插值**，因此不会产生平面投影假交点。
 
+此外 `split_region_at_seam` 在“区域整体位于调用方给定开半球、且边界不过极”
+的前提下，把简单环切成切缝两侧**闭合可填充**的多边形（沿缝补边、配对由心射
+投影精确判定），详见下文“第二入口”一节。
+
 仅使用 Python 标准库。
 
 ## Python 版本与依赖
@@ -20,8 +24,8 @@
 在仓库根目录（本文件所在目录）：
 
 ```bash
-python -m unittest discover -s tests -v   # 必要测试（约 3–4 秒）
-python demo.py                            # 固定输入演示（远小于 8 秒）
+./.venv/bin/python -m unittest discover -s tests -v   # 必要测试（约 3 秒）
+./.venv/bin/python demo.py                            # 固定输入演示（<1 秒）
 ```
 
 ## 接口
@@ -63,6 +67,43 @@ result = unfold_loop(points, units="deg")    # 或角度
 从而保证同一物理顶点在相邻片段中经度一致；只有普通（非极点）连接连续，
 极点连接被 `ambiguous` 断开。
 
+## 第二入口：切缝两侧可填充的闭环
+
+`unfold_loop` 只产出**开放的渲染折线**；新入口 `split_region_at_seam`
+在额外前提下把同一简单环切成**切缝两侧各自闭合、可填充的闭环**：
+
+```python
+from antimeridian import split_region_at_seam
+
+result = split_region_at_seam(points, (lon0, lat0))                 # 弧度
+result = split_region_at_seam(points, (lon0, lat0), units="deg")    # 角度
+# 便捷封装： split_region_at_seam_degrees(points, (lon0, lat0))
+```
+
+- `(lon0, lat0)` 是调用方给定的**开半球**中心；区域及其边界必须整体位于
+  该开半球内（闭式验证，非采样），且边界**不经过南/北极**。任一不满足都
+  明确抛 `UnsupportedError`（带 `location`），而不是静默回退。
+- 原边仍按短大圆弧精确求交；环在**真实横截交点**处切开（端点相切不算
+  穿越；整条沿切缝的边按原来源规则标记 `coincident` 且只保留一次）。
+  各片段沿 180° 切缝补边闭合，补边方向由原内部朝向决定；**多个交点不按
+  输入顺序两两乱连**——按交点在切缝上的纬度排序，在关于半球中心的心射
+  投影（gnomonic projection）中对原环做精确点-多边形判定，确定真正贴着
+  区域内部的切缝区间，再进行唯一的正确配对。
+- 返回不可变 `SplitRegion`：
+
+| 字段 | 含义 |
+|---|---|
+| `loops` | 可填充闭环 `RegionLoop` 元组，每个含 `side`（`east`/`west`）、`signed_area` 与有序 `segments` |
+| `segments` | 有序段 `RegionSegment`，首尾相接闭合；`kind` 为 `arc`（原弧子段，附 `edge_index` 与弧参数 `t_start`/`t_end`）、`coincident`（整条沿缝原边，保留一次）或 `seam`（合成补边，无原边号） |
+| `arcs` | 每条原弧参数（与 `UnfoldedLoop.arcs` 同约定） |
+| `signed_area` / `area_winding` | 全区有向面积与旋向，与 `unfold_loop` 完全一致 |
+| `seam_crossing_count` | 真实横截穿越次数；相切接触与重合边不计 |
+
+输出闭环的有向面积之和等于原环有向面积；合成 `seam` 补边在 180° 子午线
+上成对反向、作为有向 1-链完全抵消；原 `coincident` 边不重复。旧的开放
+片段接口 `unfold_loop` 原样保留。本入口**不**做通用全球多边形布尔或半球
+裁剪：仅支持“简单环 + 单开半球 + 不过极”这一本题子集。
+
 ## 错误语义
 
 所有错误继承 `GeometryError`（也是 `ValueError`），并带可定位的
@@ -76,6 +117,10 @@ result = unfold_loop(points, units="deg")    # 或角度
   给出边对）。相邻边共享顶点不算自交。
 - `DegenerateLoopError`：所有顶点共面于同一大圆，两侧各包一个半球，
   有向面积无法唯一定义，直接报错而不是任意给符号。
+- `UnsupportedError`：`split_region_at_seam` 专用。输入本身合法且通过
+  简单性检查，但区域/边界不整体位于给定开半球，或边界经过极点，或切缝
+  配对落在本实现子集无法安全表示的数值情形。这是明确的“unsupported”
+  判定，区别于非法输入。
 
 非法输入一律抛错、**不静默纠正或夹紧**（仅对舍入进入 `±π/2`、`±π` 的
 浮点做同值规范化）。API 为单个纯函数，校验全部通过后才构造结果，
@@ -111,6 +156,14 @@ result = unfold_loop(points, units="deg")    # 或角度
    `A = 2π − Σ 转角`，切向量在顶点切平面内由精确大圆弧方向取得，
    `atan2` 给出带符号转角（左转/左侧为正），结果规范化进 `(-2π,2π]`。
    这是按 4π 取模的有向面积；对无自交简单环，其绝对值即所围较小区域面积。
+7. **切缝闭合配对（`split_region_at_seam`）。** 把非切缝同侧边合成
+   “链”，切缝上的接触点按纬度排序；每个纬度区间是否贴着区域内部，在以
+   半球中心为中心的**心射投影**中判定——心射投影把大圆弧映成直线、且是开
+   半球上的同胚，故对原环投影多边形做偶奇射线判定即精确答案（非密采样）。
+   贴内部的区间在切缝两侧各给一条反向合成补边（`ccw` 时东侧向北、西侧
+   向南，反向遍历整体翻转），原沿缝边若已覆盖该区间则只给一条原方向的
+   `coincident` 链。配对使每个闭环简单、面积和恒等、补边有向抵消；逐链-
+   逐链接的图行走会在配对无法闭合/有残留链时明确 `UnsupportedError`。
 
 ## 误差口径
 
@@ -142,7 +195,14 @@ result = unfold_loop(points, units="deg")    # 或角度
   短弧即沿该子午线）。
 - 近极但非极（角距离小于 1e-9 弧度 ≈ 0.00000006°）的穿越按普通切缝穿越
   处理；真正精确过极的弧才标 `ambiguous`。
-- 未做多边形布尔运算或覆盖修正（overpass/fix）；本库只做单环展开。
+- 未做通用多边形布尔运算、覆盖修正（overpass/fix）或半球裁剪；本库只做
+  单环展开，以及“简单环 + 单开半球 + 不过极”子集下的切缝闭合
+  （`split_region_at_seam`）。
+- `split_region_at_seam` 不支持：区域/边界不在调用方给定开半球内；
+  边界经过南北极；两个不同切缝接触点的纬度差小于 1e-10（数值上不可区分，
+  显式拒绝而非猜测）。开半球包含判定要求每个顶点的 `x·C > 1e-12`；对每条
+  边再闭式检查其弧上 `x·C` 的唯一内部极小点，因此是完整判定（开半球对短
+  大圆弧测地凸，顶点严格在内时该检查通常不触发，保留为完备防线）。
 
 ## 目录
 
@@ -150,7 +210,8 @@ result = unfold_loop(points, units="deg")    # 或角度
 antimeridian/          # 题库（核心，标准库）
   __init__.py          # 公开导出
   core.py              # unfold_loop：校验、自交拒绝、展开编排
-  geometry.py          # 三维大圆弧/切缝/极点/面积原语
+  region.py            # split_region_at_seam：半球校验、切缝配对与闭合
+  geometry.py          # 三维大圆弧/切缝/极点/面积/心射投影原语
   models.py            # 不可变数据结构
   errors.py            # 错误体系与定位
 tests/
@@ -159,8 +220,10 @@ tests/
   test_seam.py         # 跨缝分裂、coincident、防平面假交点、近极
   test_pole.py         # 极点顶点与内部穿极 ambiguous
   test_errors.py       # NaN/Inf/bool/越界/数量/对跖/自交/退化/纯度
+  test_region.py       # 切缝闭合：凸环2穿、凹环4穿、相切、重合边、反向、
+                       # 心射投影覆盖/面积和/补边抵消/unsupported
   test_reference_crosscheck.py  # 与独立参考的交叉验证
-demo.py                # 固定输入演示
+demo.py                # 固定输入演示（含切缝闭合与 unsupported 触发）
 README.md
 ```
 
