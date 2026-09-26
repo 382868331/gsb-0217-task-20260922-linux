@@ -34,6 +34,7 @@ from .models import (
     ArcParam,
     Fragment,
     GeoPoint,
+    RegionMoments,
     SeamCrossing,
     UnfoldedLoop,
 )
@@ -278,35 +279,12 @@ def _unwrapped_fragments(desc, lon_start):
 # --------------------------------------------------------------------------- #
 # Public entry point
 # --------------------------------------------------------------------------- #
-def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
-    """Validate and unfold one closed spherical loop.
+def _validate_loop(points, units: str):
+    """Shared validation for the public entry points.
 
-    Parameters
-    ----------
-    points:
-        Iterable of 3..100 ``(lon, lat)`` pairs (or :class:`GeoPoint`).
-        The loop is closed implicitly: an edge from the last vertex back to
-        the first is added.  Angles are radians by default; pass
-        ``units="deg"`` for degrees.
-    units:
-        ``"rad"`` (default) or ``"deg"``.
-
-    Returns
-    -------
-    UnfoldedLoop
-        Original arc parameters, continuous-longitude fragments, real seam
-        crossings, pole markers and the signed area.
-
-    Raises
-    ------
-    InvalidInputError
-        Bad count/type/range, NaN/Infinity, bool, or zero-length edge.
-    AntipodalAdjacentError
-        Consecutive vertices are (near) antipodal.
-    SelfIntersectionError
-        Two non-adjacent edges cross or overlap.
-    DegenerateLoopError
-        All vertices lie on one great circle (signed area undefined).
+    Returns ``(pts, xyz, alphas)``: validated points, unit vectors and
+    per-edge central angles.  Raises before returning anything on bad
+    input, so callers never see partial state.
     """
     if units == "deg":
         scale = math.pi / 180.0
@@ -351,7 +329,42 @@ def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
             "all vertices lie on one great circle; signed area undefined",
             "loop",
         )
+    return pts, xyz, alphas
+
+
+def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
+    """Validate and unfold one closed spherical loop.
+
+    Parameters
+    ----------
+    points:
+        Iterable of 3..100 ``(lon, lat)`` pairs (or :class:`GeoPoint`).
+        The loop is closed implicitly: an edge from the last vertex back to
+        the first is added.  Angles are radians by default; pass
+        ``units="deg"`` for degrees.
+    units:
+        ``"rad"`` (default) or ``"deg"``.
+
+    Returns
+    -------
+    UnfoldedLoop
+        Original arc parameters, continuous-longitude fragments, real seam
+        crossings, pole markers and the signed area.
+
+    Raises
+    ------
+    InvalidInputError
+        Bad count/type/range, NaN/Infinity, bool, or zero-length edge.
+    AntipodalAdjacentError
+        Consecutive vertices are (near) antipodal.
+    SelfIntersectionError
+        Two non-adjacent edges cross or overlap.
+    DegenerateLoopError
+        All vertices lie on one great circle (signed area undefined).
+    """
+    pts, xyz, alphas = _validate_loop(points, units)
     area = g.signed_area(xyz)
+    n = len(pts)
 
     descs = [
         _edge_descriptor(i, pts[i], pts[(i + 1) % n],
@@ -416,3 +429,54 @@ def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
 def unfold_loop_degrees(points) -> UnfoldedLoop:
     """Convenience wrapper: longitudes/latitudes given in degrees."""
     return unfold_loop(points, units="deg")
+
+
+# Threshold below which a first-moment vector is treated as zero (no
+# well-defined centroid direction).  A region inside an open hemisphere
+# always has |M| > 0; a zero moment requires a balanced (e.g. symmetric)
+# region.
+ZERO_MOMENT_EPS = 1e-12
+
+
+def region_moments(points, *, units: str = "rad") -> RegionMoments:
+    """Signed 3-D area moments of the region enclosed by a simple loop.
+
+    Same input contract and error semantics as :func:`unfold_loop`; the
+    loop is validated identically (NaN/Infinity/bool rejected, antipodal
+    adjacent edges, self-intersection and great-circle degeneracy all
+    raise before anything is computed).
+
+    Returns
+    -------
+    RegionMoments
+        ``signed_area`` (same value as :func:`unfold_loop`), the signed
+        first-moment vector ``M = integral of x dA``, the signed symmetric
+        second-moment matrix ``S = integral of x x^T dA`` and, when
+        ``|M|`` is nonzero, the normalized direction centroid ``M/|M|``.
+
+    Notes
+    -----
+    Everything is integrated on 3-D unit vectors, so loops crossing the
+    date line need no special handling.  Reversing the loop negates the
+    area and both moments.  ``trace(S) == signed_area`` and under a rigid
+    rotation ``R`` the moments transform as ``R M`` and ``R S R^T``.
+    """
+    pts, xyz, alphas = _validate_loop(points, units)
+    area, mom, sec = g.signed_moments(xyz)
+    mag = g.norm(mom)
+    centroid = None
+    if mag > ZERO_MOMENT_EPS:
+        centroid = (mom[0] / mag, mom[1] / mag, mom[2] / mag)
+    winding = "ccw" if area > 0 else ("cw" if area < 0 else "zero")
+    return RegionMoments(
+        signed_area=area,
+        area_winding=winding,
+        first_moment=mom,
+        second_moment=sec,
+        direction_centroid=centroid,
+    )
+
+
+def region_moments_degrees(points) -> RegionMoments:
+    """Convenience wrapper: longitudes/latitudes given in degrees."""
+    return region_moments(points, units="deg")

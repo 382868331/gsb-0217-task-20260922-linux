@@ -208,6 +208,106 @@ def signed_area(vertices_xyz) -> float:
 
 
 # --------------------------------------------------------------------------- #
+# Signed 3-D first and second area moments of the enclosed region
+# --------------------------------------------------------------------------- #
+def signed_moments(vertices_xyz):
+    """Signed area moments of the region enclosed by a simple loop.
+
+    Returns (signed_area, first_moment, second_moment) where
+
+    * signed_area   -- directed area in (-2*pi, 2*pi] (left side positive),
+      identical to signed_area();
+    * first_moment  -- the signed integral of the position vector,
+      M = integral of x dA (a 3-tuple);
+    * second_moment -- the signed integral of the outer product,
+      S = integral of x x^T dA (a symmetric 3x3 matrix, tuple of 3 rows).
+
+    Both moments are *signed*: reversing the loop orientation negates them,
+    while the geometric region size is unchanged.  Because |x| = 1 on the
+    unit sphere, trace(S) == signed_area exactly (up to rounding).
+
+    Derivation (spherical divergence theorem; exact boundary integrals, no
+    lon/lat unwrapping involved):
+
+    * With the tangential projection P c = c - (c.x) x of a constant vector,
+      div_S(P c) = -2 (c.x).  The outward conormal of a great-circle edge
+      is the constant -m with m = (p x q)/|p x q|, so
+      M = (1/2) sum_e alpha_e m_e.
+    * div_S((c.x) P d) = (c.d) - 3 (c.x)(d.x); symmetrizing in (c, d) and
+      integrating c.x along the arc x(s) = cos(s) p + sin(s) w with
+      w = (q - cos(alpha) p)/sin(alpha) gives
+      S[c,d] = (c.d) A/3 + (1/6) sum_e [(d.m) I_c + (c.m) I_d],
+      I_c = (c.p) sin(alpha) + (c.w) (1 - cos(alpha)).
+
+    The boundary formulas integrate the region on the *left* of the
+    oriented loop.  When that left region is the larger one (area
+    A_left > 2*pi), the signed moments of the enclosed smaller region
+    follow from integral-of-x-over-sphere = 0 and
+    integral-of-xx^T-over-sphere = (4*pi/3) I: the first moment is
+    unchanged and the second moment loses (4*pi/3) I.
+    """
+    n = len(vertices_xyz)
+    total_turn = 0.0
+    for i in range(n):
+        total_turn += turning_angle(
+            vertices_xyz[i - 1], vertices_xyz[i], vertices_xyz[(i + 1) % n]
+        )
+    two_pi = 2.0 * math.pi
+    four_pi = 2.0 * two_pi
+    a_left = (two_pi - total_turn) % four_pi
+    big = a_left > two_pi
+    area = a_left - four_pi if big else a_left
+
+    mom = [0.0, 0.0, 0.0]
+    sec = [[0.0, 0.0, 0.0] for _ in range(3)]
+    for i in range(n):
+        p = vertices_xyz[i]
+        q = vertices_xyz[(i + 1) % n]
+        alpha = central_angle(p, q)
+        sa = math.sin(alpha)
+        ca = math.cos(alpha)
+        pq = cross(p, q)
+        m = (pq[0] / sa, pq[1] / sa, pq[2] / sa)  # unit edge normal
+        w = ((q[0] - ca * p[0]) / sa,
+             (q[1] - ca * p[1]) / sa,
+             (q[2] - ca * p[2]) / sa)
+        for c in range(3):
+            mom[c] += 0.5 * alpha * m[c]
+        # I_c = integral of (e_c . x) ds along the arc, per component.
+        arc_i = (
+            p[0] * sa + w[0] * (1.0 - ca),
+            p[1] * sa + w[1] * (1.0 - ca),
+            p[2] * sa + w[2] * (1.0 - ca),
+        )
+        for c in range(3):
+            ic = arc_i[c]
+            for d in range(3):
+                sec[c][d] += (m[d] * ic + m[c] * arc_i[d]) / 6.0
+    # The boundary sum integrates the region on the LEFT of the loop, so
+    # the isotropic term uses the raw left-region area a_left (which may
+    # exceed 2*pi); the 4*pi correction below then maps to the enclosed
+    # smaller region whose area is the canonicalized signed area.
+    third_a = a_left / 3.0
+    for c in range(3):
+        sec[c][c] += third_a
+    if big:
+        # The boundary integral covers the left (larger) region; subtract
+        # the full-sphere second moment (4*pi/3) I to obtain the signed
+        # moment of the enclosed smaller region.  The first moment needs
+        # no correction because the full-sphere first moment is zero.
+        corr = four_pi / 3.0
+        for c in range(3):
+            sec[c][c] -= corr
+    # Symmetrize away residual rounding asymmetry; the exact value is
+    # symmetric by construction.
+    second = tuple(
+        tuple(0.5 * (sec[r][c] + sec[c][r]) for c in range(3))
+        for r in range(3)
+    )
+    return area, (mom[0], mom[1], mom[2]), second
+
+
+# --------------------------------------------------------------------------- #
 # Seam (lon = +/- pi half-meridian) and pole events of one short arc
 # --------------------------------------------------------------------------- #
 def seam_plane_hits(p, q, alpha: float):

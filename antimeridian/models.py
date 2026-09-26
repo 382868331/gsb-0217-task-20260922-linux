@@ -157,3 +157,45 @@ class UnfoldedLoop:
     ambiguous_markers: tuple[AmbiguousMarker, ...]
     signed_area: float
     area_winding: str
+
+
+@dataclass(frozen=True)
+class RegionMoments:
+    """Signed 3-D area moments of the region enclosed by a simple loop.
+
+    All quantities are computed on 3-D unit vectors (never from unwrapped
+    lon/lat), so a loop crossing the date line is handled identically to
+    any other loop.  Every quantity is *signed*: reversing the loop
+    orientation negates ``signed_area``, ``first_moment`` and
+    ``second_moment`` (and flips ``direction_centroid``), while the
+    geometric region itself is unchanged.
+
+    Attributes
+    ----------
+    signed_area:
+        Directed area in ``(-2*pi, 2*pi]``; left side of the oriented loop
+        is positive.  Identical to :attr:`UnfoldedLoop.signed_area`.
+    area_winding:
+        ``"ccw"`` / ``"cw"`` / ``"zero"``.
+    first_moment:
+        The signed integral of the position vector over the region,
+        ``M = integral of x dA``, as an ``(x, y, z)`` tuple.  This is NOT
+        an average of vertex positions; it is the exact area-weighted
+        integral.  For a region inside an open hemisphere ``M`` is always
+        nonzero.
+    second_moment:
+        The signed integral of ``x x^T`` over the region as a symmetric
+        3x3 matrix (tuple of 3 row tuples).  Its trace equals
+        ``signed_area`` (since ``|x| = 1``), and under a rigid rotation
+        ``R`` of the loop it transforms as ``R S R^T``.
+    direction_centroid:
+        ``M / |M|`` -- the normalized direction of the area centroid --
+        or ``None`` when ``|M|`` is zero to rounding (e.g. a region with
+        antipodal-style symmetry, where no unique direction exists).
+    """
+
+    signed_area: float
+    area_winding: str
+    first_moment: tuple[float, float, float]
+    second_moment: tuple[tuple[float, float, float], ...]
+    direction_centroid: tuple[float, float, float] | None

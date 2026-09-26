@@ -6,6 +6,12 @@
 的边标记为 `coincident` 并原样保留。全部几何在三维单位向量上完成，**不对
 经纬度做平面插值**，因此不会产生平面投影假交点。
 
+本次增量：对同一简单有向大圆环所围区域，新增**三维面积一阶矩向量**
+`M = ∫ x dA`、**二阶矩对称矩阵** `S = ∫ x xᵀ dA`，以及 `M ≠ 0` 时的
+**归一方向重心** `M/|M|`（入口 `region_moments`，见下文「面积矩接口」）。
+面积沿用既有 Gauss–Bonnet 计算；矩全部在三维单位向量上以球面散度定理
+闭式边界积分求得，不使用经度展开，也不平均顶点冒充面积重心。
+
 仅使用 Python 标准库。
 
 ## Python 版本与依赖
@@ -22,7 +28,18 @@
 ```bash
 python -m unittest discover -s tests -v   # 必要测试（约 3–4 秒）
 python demo.py                            # 固定输入演示（远小于 8 秒）
+python demo_iteration.py                   # 本次增量演示（现场计算，约 0.1 秒）
 ```
+
+### 准备 venv（可选；库只用标准库）
+
+```bash
+python3.14 -m venv .venv
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python demo_iteration.py
+```
+
+不需要 `pip install` 任何依赖（`requirements.txt` 为空/仅注释）。
 
 ## 接口
 
@@ -62,6 +79,45 @@ result = unfold_loop(points, units="deg")    # 或角度
 展开后经度可以超出 `[-π, π]`（如 `170° → 190°` 表示东向跨过切缝），
 从而保证同一物理顶点在相邻片段中经度一致；只有普通（非极点）连接连续，
 极点连接被 `ambiguous` 断开。
+
+## 面积矩接口（本次增量）
+
+```python
+from antimeridian import region_moments
+
+m = region_moments(points)                 # 弧度
+m = region_moments(points, units="deg")    # 角度；封装 region_moments_degrees
+```
+
+输入契约、校验与错误语义与 `unfold_loop` **完全相同**（同一 `_validate_loop`，
+NaN/Inf/bool/对跖/自交/共大圆退化全部同样拒绝）。返回不可变的 `RegionMoments`：
+
+| 字段 | 含义 |
+|---|---|
+| `signed_area` | 有向面积 `(-2π, 2π]`（与 `unfold_loop` 一致，左侧为正） |
+| `area_winding` | `"ccw"` / `"cw"` / `"zero"` |
+| `first_moment` | 有向一阶矩向量 `M = ∫ x dA`（三维 `(x,y,z)` 元组） |
+| `second_moment` | 有向二阶矩对称矩阵 `S = ∫ x xᵀ dA`（3×3，按行元组） |
+| `direction_centroid` | `M/|M|` 归一方向重心；`|M| ≤ 1e-12` 时为 `None` |
+
+性质（均有测试锁定）：
+
+- **有向性**：反转轮廓，`signed_area`、`M`、`S` 同时反号，方向重心反向，
+  几何区域大小不变。
+- **迹恒等**：`trace(S) = signed_area`（因 `|x| = 1`）。
+- **旋转协变**：刚体旋转 `R` 后 `M → R M`，`S → R S Rᵀ`，方向重心随转。
+- **可加性**：区域并（共同边抵消）的矩等于分块矩之和。
+- **跨日期线透明**：全部在三维方向向量上积分，跨缝环无需任何特判；
+  经度展开结果不用于面积或矩公式。
+- 方向重心是**面积加权积分**的方向，不是顶点位置的平均（有专门测试
+  防止退化为顶点平均）。
+- 开半球内的区域必有 `M ≠ 0`；`M = 0`（方向重心为 `None`）只可能出现在
+  跨半球均衡的区域（测试用精确调参的哑铃形区域覆盖此分支）。
+
+矩的数学定义是"环左侧区域"的有向积分。左侧区域面积按 4π 取模表示在
+`(-2π, 2π]`；当左侧为较大区域（面积 > 2π）时，利用全球面矩
+`∫ x dA = 0`、`∫ x xᵀ dA = (4π/3) I` 修正为所围较小区域的有向矩，
+从而 `trace(S) = signed_area` 恒成立。
 
 ## 错误语义
 
@@ -111,6 +167,14 @@ result = unfold_loop(points, units="deg")    # 或角度
    `A = 2π − Σ 转角`，切向量在顶点切平面内由精确大圆弧方向取得，
    `atan2` 给出带符号转角（左转/左侧为正），结果规范化进 `(-2π,2π]`。
    这是按 4π 取模的有向面积；对无自交简单环，其绝对值即所围较小区域面积。
+7. **面积矩（球面散度定理闭式边界积分）。** 对切向投影场
+   `P c = c − (c·x)x` 有 `div_S(P c) = −2(c·x)`，大圆弧的外余法向为常向量
+   `−m`（`m = (P×Q)/|P×Q|`），故 `M = ½ Σ α_e m_e`。又
+   `div_S((c·x) P d) = (c·d) − 3(c·x)(d·x)`，对 `(c,d)` 对称化并沿弧
+   `x(s)=cos s·P + sin s·W`（`W=(Q−cosα P)/sinα`）积出
+   `S[c,d] = (c·d)A/3 + (1/6) Σ_e [(d·m) I_c + (c·m) I_d]`，
+   `I_c = (c·P) sinα + (c·W)(1−cosα)`。全部闭式，无数值积分、
+   无经纬展开。左侧区域面积 `> 2π` 时用全球面矩修正（见上节）。
 
 ## 误差口径
 
@@ -128,6 +192,13 @@ result = unfold_loop(points, units="deg")    # 或角度
 - **角度守卫带**：对跖 `|P·Q+1| < 1e-12` 拒绝；重合顶点 `P·Q > 1-1e-12`
   拒绝；经线/极点判定阈值 1e-9（弧度）。这些是输入安全边界，不用于放宽
   面积断言。
+- **面积矩**：闭式边界积分，双精度舍入量级。八分球三角形解析值
+  （`M=(π/4)(1,1,1)`、`S` 对角 `π/6` 非对角 `1/3`）精确到机器精度；
+  与独立高精度细分积分参考（`tests/moment_reference.py`，不导入被测核心）
+  在凸/凹/跨日期线多边形上互校，核心闭式值与参考之差即参考自身的
+  数值积分误差（观测 `≤ 4e-6`，判定门限 `1e-5`，远小于参考网格误差
+  本身）；旋转协变 `R M`、`R S Rᵀ` 与迹恒等 `trace(S)=signed_area`
+  的测试容差为 1e-12 量级。
 
 ## 已知限制 / 实现子集
 
@@ -143,24 +214,31 @@ result = unfold_loop(points, units="deg")    # 或角度
 - 近极但非极（角距离小于 1e-9 弧度 ≈ 0.00000006°）的穿越按普通切缝穿越
   处理；真正精确过极的弧才标 `ambiguous`。
 - 未做多边形布尔运算或覆盖修正（overpass/fix）；本库只做单环展开。
+- 面积矩按"环左侧区域"的有向积分定义（开半球输入时即所围区域本身）；
+  `M = 0` 时方向重心无定义，输出 `None`（开半球内区域不会发生）。
+  输入上限与展开接口相同（顶点 ≤ 100、短弧、简单环）。
 
 ## 目录
 
 ```
 antimeridian/          # 题库（核心，标准库）
   __init__.py          # 公开导出
-  core.py              # unfold_loop：校验、自交拒绝、展开编排
-  geometry.py          # 三维大圆弧/切缝/极点/面积原语
+  core.py              # unfold_loop / region_moments：校验、展开、矩编排
+  geometry.py          # 三维大圆弧/切缝/极点/面积/面积矩原语
   models.py            # 不可变数据结构
   errors.py            # 错误体系与定位
 tests/
   reference.py         # 独立参考（不 import 被测核心）
+  moment_reference.py  # 面积矩独立参考：扇形三角剖分+高精度细分积分
   test_area.py         # pi/2 解析、方向反转、旋转不变
   test_seam.py         # 跨缝分裂、coincident、防平面假交点、近极
   test_pole.py         # 极点顶点与内部穿极 ambiguous
   test_errors.py       # NaN/Inf/bool/越界/数量/对跖/自交/退化/纯度
   test_reference_crosscheck.py  # 与独立参考的交叉验证
+  test_moments.py      # 矩：解析值、反转、旋转协变、可加性、独立参考、
+                       # 零矩无重心、异常路径
 demo.py                # 固定输入演示
+demo_iteration.py       # 本次增量（面积矩）现场计算演示
 README.md
 ```
 
@@ -170,3 +248,10 @@ README.md
 立体角扇形和（核心用 Gauss–Bonnet 转角和），切缝事件用对精确 SLERP 的
 独立密采样（核心用平面闭式相交），穿极用加弧长判据（核心用 SLERP 基
 反演）。两套独立推导一致才作为正确性依据；往返一致仅作补充，不作预言机。
+
+`tests/moment_reference.py` 同样**不导入** `antimeridian`：从任意顶点扇形
+三角剖分（有向三角形，凹环自动抵消），把每个球面三角形细分成
+160×160 测地网格后数值累加 `x dA` 与 `x xᵀ dA`（微三角形有向面积用
+Van Oosterom 公式、被积函数取微三角形质心）。核心则是散度定理闭式边界
+积分——两条独立推导路径一致才作为正确性依据；该参考只作数值参照，
+并用于核对矩的可加性，旧经度展开结果不作为面积/矩公式。
