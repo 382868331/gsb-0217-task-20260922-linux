@@ -155,3 +155,83 @@ def reference_edge_passes_pole(p, q, alpha):
                 < alpha - 1e-9:
             out.append(name)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Independent high-resolution spherical-triangle moment reference
+# --------------------------------------------------------------------------- #
+def _outer_six(a, b, c):
+    # Symmetric raw second moment of a planar triangle divided by its area:
+    # (aa + bb + cc + sym(ab+ac+bc)) / 6.
+    return (
+        (a[0]*a[0] + b[0]*b[0] + c[0]*c[0]
+         + a[0]*b[0] + a[0]*c[0] + b[0]*c[0]) / 6.0,
+        (a[1]*a[1] + b[1]*b[1] + c[1]*c[1]
+         + a[1]*b[1] + a[1]*c[1] + b[1]*c[1]) / 6.0,
+        (a[2]*a[2] + b[2]*b[2] + c[2]*c[2]
+         + a[2]*b[2] + a[2]*c[2] + b[2]*c[2]) / 6.0,
+        (a[0]*a[1] + b[0]*b[1] + c[0]*c[1]
+         + 0.5*(a[0]*b[1] + a[1]*b[0]
+                + a[0]*c[1] + a[1]*c[0]
+                + b[0]*c[1] + b[1]*c[0])) / 6.0,
+        (a[0]*a[2] + b[0]*b[2] + c[0]*c[2]
+         + 0.5*(a[0]*b[2] + a[2]*b[0]
+                + a[0]*c[2] + a[2]*c[0]
+                + b[0]*c[2] + b[2]*c[0])) / 6.0,
+        (a[1]*a[2] + b[1]*b[2] + c[1]*c[2]
+         + 0.5*(a[1]*b[2] + a[2]*b[1]
+                + a[1]*c[2] + a[2]*c[1]
+                + b[1]*c[2] + b[2]*c[1])) / 6.0,
+    )
+
+
+def _triangle_moments_leaf(a, b, c):
+    det = dot(a, cross(b, c))
+    area = 2.0 * math.atan2(abs(det),
+                            1.0 + dot(a, b) + dot(b, c) + dot(c, a))
+    centroid = ((a[0] + b[0] + c[0]) / 3.0,
+                (a[1] + b[1] + c[1]) / 3.0,
+                (a[2] + b[2] + c[2]) / 3.0)
+    length = norm(centroid)
+    centroid = (centroid[0]/length, centroid[1]/length, centroid[2]/length)
+    first = (area * centroid[0], area * centroid[1], area * centroid[2])
+    second = tuple(area * x for x in _outer_six(a, b, c))
+    return area, first, second
+
+
+def _midpoint(a, b):
+    v = (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+    n = norm(v)
+    return (v[0]/n, v[1]/n, v[2]/n)
+
+
+def _subdivide_triangle(a, b, c, depth):
+    if depth == 0:
+        return _triangle_moments_leaf(a, b, c)
+    ab, bc, ca = _midpoint(a, b), _midpoint(b, c), _midpoint(c, a)
+    total_area = 0.0
+    total_first = (0.0, 0.0, 0.0)
+    total_second = (0.0,) * 6
+    for tri in ((a, ab, ca), (b, bc, ab),
+                (c, ca, bc), (ab, bc, ca)):
+        area, first, second = _subdivide_triangle(*tri, depth - 1)
+        total_area += area
+        total_first = tuple(x + y for x, y in zip(total_first, first))
+        total_second = tuple(x + y for x, y in zip(total_second, second))
+    return total_area, total_first, total_second
+
+
+def reference_triangle_moments(a, b, c, depth=6):
+    """Unsigned area moments by independent normalized-midpoint subdivision."""
+    return _subdivide_triangle(a, b, c, depth)
+
+
+def richardson_triangle_moments(a, b, c):
+    coarse = reference_triangle_moments(a, b, c, 4)
+    fine = reference_triangle_moments(a, b, c, 6)
+    area = (16.0 * fine[0] - coarse[0]) / 15.0
+    first = tuple((16.0 * f - c0) / 15.0
+                  for f, c0 in zip(fine[1], coarse[1]))
+    second = tuple((16.0 * f - c0) / 15.0
+                   for f, c0 in zip(fine[2], coarse[2]))
+    return area, first, second

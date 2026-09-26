@@ -74,3 +74,7 @@ class DegenerateLoopError(GeometryError):
     hemisphere on *both* sides, so a signed area in ``(-2*pi, 2*pi]`` cannot
     be assigned.  Raised instead of silently returning an arbitrary sign.
     """
+
+
+class NotInOpenHemisphereError(GeometryError):
+    """Vertices are not strictly contained in an open hemisphere."""

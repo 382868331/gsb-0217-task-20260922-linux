@@ -7,6 +7,7 @@ Public surface::
         UnfoldedLoop, ArcParam, Fragment, SeamCrossing, AmbiguousMarker,
         GeometryError, InvalidInputError, AntipodalAdjacentError,
         SelfIntersectionError, DegenerateLoopError,
+        NotInOpenHemisphereError, SymmetricMatrix3,
     )
 """
 
@@ -16,6 +17,7 @@ from .errors import (
     DegenerateLoopError,
     GeometryError,
     InvalidInputError,
+    NotInOpenHemisphereError,
     SelfIntersectionError,
 )
 from .models import (
@@ -24,6 +26,7 @@ from .models import (
     Fragment,
     GeoPoint,
     SeamCrossing,
+    SymmetricMatrix3,
     UnfoldedLoop,
 )
 
@@ -41,4 +44,6 @@ __all__ = [
     "AntipodalAdjacentError",
     "SelfIntersectionError",
     "DegenerateLoopError",
+    "NotInOpenHemisphereError",
+    "SymmetricMatrix3",
 ]

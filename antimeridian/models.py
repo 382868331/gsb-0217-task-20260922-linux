@@ -113,6 +113,23 @@ class SeamCrossing:
 
 
 @dataclass(frozen=True)
+class SymmetricMatrix3:
+    """Symmetric 3-by-3 matrix, iterable as three row tuples."""
+
+    xx: float
+    yy: float
+    zz: float
+    xy: float
+    xz: float
+    yz: float
+
+    def __iter__(self):
+        yield (self.xx, self.xy, self.xz)
+        yield (self.xy, self.yy, self.yz)
+        yield (self.xz, self.yz, self.zz)
+
+
+@dataclass(frozen=True)
 class AmbiguousMarker:
     """A pole event belonging to an edge, kept out of the fragment chain.
 
@@ -149,6 +166,13 @@ class UnfoldedLoop:
         represented in that interval (see README "Area convention").
     area_winding:
         ``"ccw"`` (positive signed area) or ``"cw"``.
+    first_moment:
+        Signed integral vector of position over the oriented region.
+    second_moment:
+        Symmetric signed position outer-product moment matrix.
+    centroid_direction:
+        Unit direction of the unsigned region area centroid, or None when
+        the first moment is zero.
     """
 
     arcs: tuple[ArcParam, ...]
@@ -157,3 +181,6 @@ class UnfoldedLoop:
     ambiguous_markers: tuple[AmbiguousMarker, ...]
     signed_area: float
     area_winding: str
+    first_moment: tuple[float, float, float]
+    second_moment: SymmetricMatrix3
+    centroid_direction: tuple[float, float, float] | None

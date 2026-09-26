@@ -27,6 +27,7 @@ from . import geometry as g
 from .errors import (
     DegenerateLoopError,
     InvalidInputError,
+    NotInOpenHemisphereError,
     SelfIntersectionError,
 )
 from .models import (
@@ -35,6 +36,7 @@ from .models import (
     Fragment,
     GeoPoint,
     SeamCrossing,
+    SymmetricMatrix3,
     UnfoldedLoop,
 )
 
@@ -295,7 +297,7 @@ def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
     -------
     UnfoldedLoop
         Original arc parameters, continuous-longitude fragments, real seam
-        crossings, pole markers and the signed area.
+        crossings, pole markers, signed area and signed area moments.
 
     Raises
     ------
@@ -307,6 +309,8 @@ def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
         Two non-adjacent edges cross or overlap.
     DegenerateLoopError
         All vertices lie on one great circle (signed area undefined).
+    NotInOpenHemisphereError
+        Vertices are not strictly contained in one open hemisphere.
     """
     if units == "deg":
         scale = math.pi / 180.0
@@ -351,7 +355,25 @@ def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
             "all vertices lie on one great circle; signed area undefined",
             "loop",
         )
+    if not g.lies_in_open_hemisphere(xyz):
+        raise NotInOpenHemisphereError(
+            "loop is not strictly contained in an open hemisphere; "
+            "signed spherical moments require this domain",
+            "loop",
+        )
     area = g.signed_area(xyz)
+    first_moment = g.first_area_moment(xyz)
+    second_moment_values = g.second_area_moment(xyz, area)
+    # The first moment changes sign with the contour.  The geometric
+    # centroid direction belongs to the unsigned region, so remove that
+    # orientation sign before normalizing.
+    geometric_moment = tuple(v * (1.0 if area >= 0.0 else -1.0)
+                             for v in first_moment)
+    moment_norm = math.sqrt(sum(v * v for v in geometric_moment))
+    centroid_direction = (
+        tuple(v / moment_norm for v in geometric_moment)
+        if moment_norm > 0.0 else None
+    )
 
     descs = [
         _edge_descriptor(i, pts[i], pts[(i + 1) % n],
@@ -410,6 +432,9 @@ def unfold_loop(points, *, units: str = "rad") -> UnfoldedLoop:
         ambiguous_markers=tuple(markers),
         signed_area=area,
         area_winding=winding,
+        first_moment=first_moment,
+        second_moment=SymmetricMatrix3(*second_moment_values),
+        centroid_direction=centroid_direction,
     )
 
 

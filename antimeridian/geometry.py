@@ -208,6 +208,117 @@ def signed_area(vertices_xyz) -> float:
 
 
 # --------------------------------------------------------------------------- #
+# Spherical area moments
+# --------------------------------------------------------------------------- #
+def lies_in_open_hemisphere(vertices_xyz, eps: float = 1e-12) -> bool:
+    """True iff some unit axis has strictly positive dot with every vertex.
+
+    A cell of the arrangement of the vertex great circles either contains a
+    vertex or an intersection of two such great circles.  Candidate axes at
+    those arrangement vertices are perturbed along their active constraints.
+    """
+    unit = [normalize(v) for v in vertices_xyz]
+    candidates = list(unit)
+    for i in range(len(unit)):
+        for j in range(i + 1, len(unit)):
+            axis = cross(unit[i], unit[j])
+            length = norm(axis)
+            if length > eps:
+                axis = (axis[0] / length, axis[1] / length, axis[2] / length)
+                candidates.extend((axis, (-axis[0], -axis[1], -axis[2])))
+
+    def feasible(axis):
+        length = norm(axis)
+        if length <= eps:
+            return False
+        u = (axis[0] / length, axis[1] / length, axis[2] / length)
+        return min(dot(u, v) for v in unit) > eps
+
+    for axis in candidates:
+        dots = [dot(axis, v) for v in unit]
+        if min(dots) > eps:
+            return True
+        if min(dots) < -eps:
+            continue
+        active = [v for v, value in zip(unit, dots) if abs(value) <= eps]
+        inward = (sum(v[0] for v in active),
+                  sum(v[1] for v in active),
+                  sum(v[2] for v in active))
+        trials = [inward,
+                  (axis[k] + inward[k] for k in range(3)),
+                  (axis[k] - inward[k] for k in range(3))]
+        for v in active:
+            trials.append((axis[k] + v[k] for k in range(3)))
+            side = cross(axis, v)
+            if norm(side) > eps:
+                trials.append(side)
+                trials.append((-side[0], -side[1], -side[2]))
+        for trial in trials:
+            if feasible(tuple(trial)):
+                return True
+    return False
+
+
+def first_area_moment(vertices_xyz):
+    """Signed integral vector ``integral_R x dA`` for a geodesic polygon."""
+    total = [0.0, 0.0, 0.0]
+    n = len(vertices_xyz)
+    for i in range(n):
+        p = vertices_xyz[i]
+        q = vertices_xyz[(i + 1) % n]
+        edge_normal = cross(p, q)
+        scale = central_angle(p, q) / norm(edge_normal)
+        for k in range(3):
+            total[k] += 0.5 * scale * edge_normal[k]
+    return (total[0], total[1], total[2])
+
+
+def second_area_moment(vertices_xyz, area: float):
+    """Signed integral matrix ``integral_R x x^T dA``.
+
+    The spherical divergence theorem reduces each entry to an edge integral.
+    Diagonal entries use ``integral_edge (c.x) x ds``; each off-diagonal
+    entry is the polarized symmetrized boundary term.  This implementation
+    accumulates the diagonal and the half-symmetric off-diagonal value
+    separately, then ``3M = area*I - S``.
+    The returned matrix is symmetric and its trace equals the signed area.
+    """
+    s_xx = s_yy = s_zz = 0.0
+    s_xy = s_xz = s_yz = 0.0
+    n = len(vertices_xyz)
+    for i in range(n):
+        p = vertices_xyz[i]
+        q = vertices_xyz[(i + 1) % n]
+        edge_normal = cross(p, q)
+        edge_norm = norm(edge_normal)
+        alpha = math.acos(max(-1.0, min(1.0, dot(p, q))))
+        conormal = (-edge_normal[0] / edge_norm,
+                    -edge_normal[1] / edge_norm,
+                    -edge_normal[2] / edge_norm)
+        integral_x_scale = math.tan(alpha / 2.0)
+        integral_x = tuple(
+            integral_x_scale * (p[k] + q[k]) for k in range(3)
+        )
+        s_xx += conormal[0] * integral_x[0]
+        s_yy += conormal[1] * integral_x[1]
+        s_zz += conormal[2] * integral_x[2]
+        s_xy += 0.5 * (conormal[0] * integral_x[1]
+                       + conormal[1] * integral_x[0])
+        s_xz += 0.5 * (conormal[0] * integral_x[2]
+                       + conormal[2] * integral_x[0])
+        s_yz += 0.5 * (conormal[1] * integral_x[2]
+                       + conormal[2] * integral_x[1])
+    return (
+        (area - s_xx) / 3.0,
+        (area - s_yy) / 3.0,
+        (area - s_zz) / 3.0,
+        (0.0 - s_xy) / 3.0,
+        (0.0 - s_xz) / 3.0,
+        (0.0 - s_yz) / 3.0,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Seam (lon = +/- pi half-meridian) and pole events of one short arc
 # --------------------------------------------------------------------------- #
 def seam_plane_hits(p, q, alpha: float):
